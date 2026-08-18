@@ -83,6 +83,20 @@ class AsyncsshTransport:
         """The command actually sent over the wire for a stdin-carrying write."""
         return f"sudo -n {cmd}" if sudo else cmd
 
+    @staticmethod
+    def normalize_rc(exit_status: int | None) -> int:
+        """Map an asyncssh `exit_status` to our rc convention.
+
+        asyncssh reports `exit_status=None` when the remote process was killed
+        by a signal rather than exiting normally (it reports the signal name
+        separately). `int(None or 0)` would misread that as rc=0 (success) --
+        instead treat it as a hard failure, using 255, the shell convention for
+        "process died abnormally."
+        """
+        if exit_status is None:
+            return 255
+        return int(exit_status)
+
     async def run(self, ssh: SshSpec, cmd: str, stdin: str | None = None) -> tuple[int, str, str]:
         import asyncssh  # local import: keeps asyncssh out of the test import graph
 
@@ -95,7 +109,11 @@ class AsyncsshTransport:
             ssh.host, username=ssh.user, client_keys=[self._key_path], known_hosts=None
         ) as conn:
             result = await conn.run(remote_cmd, input=stdin, check=False)
-            return int(result.exit_status or 0), str(result.stdout or ""), str(result.stderr or "")
+            return (
+                self.normalize_rc(result.exit_status),
+                str(result.stdout or ""),
+                str(result.stderr or ""),
+            )
 
 
 def _q(path: str) -> str:
@@ -144,17 +162,19 @@ def diff_files(live: dict[str, str | None], rendered: dict[str, str]) -> str:
 
 def _mode_for(path: str) -> tuple[str, str | None]:
     """(chmod-arg, chown-arg-or-None) for a deployed path, per the fleet's install
-    script conventions -- executable scripts run 0755, the NUT daemons' own
-    `/etc/nut/*.conf` files run 0640 root:nut, and the upssched sudoers drop-in
-    runs 0440. Anything else (e.g. `upsd.users`) is left at whatever `tee`'s
-    default create mode gives it -- the fleet's install scripts never hardened
-    it further, so nutctl doesn't invent a policy here either.
+    script conventions -- executable scripts run 0755, the upssched sudoers
+    drop-in runs 0440, and everything else NUT keeps under `/etc/nut/` runs
+    0640 root:nut. That last rule is deliberately NOT scoped to `*.conf`: it
+    also has to cover `upsd.users` (server-side, holds the monuser/nutnode/
+    synology-monuser passwords in plaintext) and any future non-`.conf` file
+    dropped in `/etc/nut/` -- narrowing it to `.conf` would silently leave a
+    secrets-bearing file world-readable at tee's default create mode.
     """
     if path.endswith(".sh"):
         return "755", None
     if path.startswith("/etc/sudoers.d/"):
         return "440", None
-    if path.startswith("/etc/nut/") and path.endswith(".conf"):
+    if path.startswith("/etc/nut/"):
         return "640", "root:nut"
     return "", None
 

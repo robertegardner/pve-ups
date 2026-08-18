@@ -163,9 +163,10 @@ async def test_deploy_sets_modes_per_fleet_convention():
     assert "chmod 640 -- /etc/nut/upsmon.conf" in cmds
     assert "chown root:nut -- /etc/nut/upsmon.conf" in cmds
     assert "chmod 440 -- /etc/sudoers.d/nut-upssched" in cmds
-    # upsd.users matches none of the special-cased patterns -- left alone.
-    assert not any("upsd.users" in c and c.startswith("chmod") for c in cmds)
-    assert not any("upsd.users" in c and c.startswith("chown") for c in cmds)
+    # upsd.users has no .conf suffix but still lives under /etc/nut/ and holds
+    # real passwords -- it must get the same 640 root:nut as the .conf files.
+    assert "chmod 640 -- /etc/nut/upsd.users" in cmds
+    assert "chown root:nut -- /etc/nut/upsd.users" in cmds
     assert result.ok is True
 
 
@@ -385,3 +386,19 @@ def test_build_write_command_uses_bare_sudo_dash_n_prefix_for_tee():
 
     assert out == "sudo -n tee -- /etc/nut/nut.conf.nutctl-tmp >/dev/null"
     assert "sh -c" not in out  # not routed through an extra shell layer
+
+
+def test_normalize_rc_passes_through_normal_exit_codes():
+    assert deploy.AsyncsshTransport.normalize_rc(0) == 0
+    assert deploy.AsyncsshTransport.normalize_rc(1) == 1
+    assert deploy.AsyncsshTransport.normalize_rc(127) == 127
+
+
+def test_normalize_rc_treats_none_exit_status_as_failure_not_success():
+    # asyncssh reports exit_status=None when the remote process was killed by a
+    # signal -- int(None or 0) would misread that as rc=0 (success); it must
+    # come back as a nonzero failure code instead.
+    rc = deploy.AsyncsshTransport.normalize_rc(None)
+
+    assert rc != 0
+    assert rc == 255
