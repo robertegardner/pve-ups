@@ -15,16 +15,19 @@ def test_load_example():
     assert topo.hosts["node2"].policy == "all"
     assert topo.hosts["node1"].tiers[0].action == "qm-shutdown"
     assert topo.hosts["nas2"].type == "display-only"
-    # desc/productid: real driver-report fields live wol's ups.conf carries
-    # (task-10-report.md gap #2) that the schema previously had no slot for.
+    # desc/productid/product: real driver-report fields live wol's ups.conf
+    # carries (task-10-report.md gap #2) that the schema previously had no
+    # slot for.
     assert topo.ups["alpha"].driver.desc == "CyberPower CP1500PFCLCD"
     assert topo.ups["alpha"].driver.productid == "0601"
+    assert topo.ups["alpha"].driver.product == "CP1500AVRLCD3"
 
 
-def test_driver_spec_desc_and_productid_are_optional():
+def test_driver_spec_desc_productid_and_product_are_optional():
     d = DriverSpec(vendorid="0764", serial="AAA1")
     assert d.desc is None
     assert d.productid is None
+    assert d.product is None
 
 
 def test_unknown_feed_rejected():

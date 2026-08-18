@@ -111,9 +111,12 @@ def _render_ups_stanza(name: str, ups: UpsSpec) -> str:
     """Render one `ups.conf` stanza, matching the live Debian/NUT convention
     (see nut/topology/fixtures/wol/ups.conf in homelab-monitor): the header
     is bare, every body line is indented 8 spaces, and `driver`/`port`/
-    `vendorid`/`desc`/`productid`/`serial` are all double-quoted. Field order
-    is driver -> port -> vendorid -> desc -> productid -> serial -> flags ->
-    override.battery.runtime.low; desc/productid are omitted when unset.
+    `vendorid`/`desc`/`productid`/`product`/`serial` are all double-quoted.
+    Field order is driver -> port -> vendorid -> desc -> productid ->
+    product -> serial -> flags -> override.battery.runtime.low;
+    desc/productid/product are omitted when unset (live wol has 3 of 5
+    stanzas with an active `product` line, the other 2 either omit it or
+    carry it commented-out -- commented-out isn't representable/rendered).
     """
     d = ups.driver
     body = ['driver = "usbhid-ups"', f'port = "{d.port}"']
@@ -123,6 +126,8 @@ def _render_ups_stanza(name: str, ups: UpsSpec) -> str:
         body.append(f'desc = "{d.desc}"')
     if d.productid is not None:
         body.append(f'productid = "{d.productid}"')
+    if d.product is not None:
+        body.append(f'product = "{d.product}"')
     if d.serial is not None:
         body.append(f'serial = "{d.serial}"')
     body.extend(d.flags)

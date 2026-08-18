@@ -109,26 +109,33 @@ def test_server_ups_conf_stanza_body_is_indented_8_spaces():
         assert line.startswith(" " * 8), line
 
 
-def test_server_ups_conf_desc_and_productid_rendered_between_vendorid_and_serial():
+def test_server_ups_conf_desc_productid_product_rendered_between_vendorid_and_serial():
+    """alpha carries desc/productid/product -- matches 3 of 5 live wol
+    stanzas that have an active `product` line (task-10-report.md gap #2
+    follow-up)."""
     files = render_server(TOPO, SECRETS_SRV)
     conf = files["/etc/nut/ups.conf"]
     assert '        desc = "CyberPower CP1500PFCLCD"' in conf
     assert '        productid = "0601"' in conf
+    assert '        product = "CP1500AVRLCD3"' in conf
     vendorid_i = conf.index('vendorid = "0764"')
     desc_i = conf.index('desc = "CyberPower CP1500PFCLCD"')
     productid_i = conf.index('productid = "0601"')
+    product_i = conf.index('product = "CP1500AVRLCD3"')
     serial_i = conf.index('serial = "AAA1"')
-    assert vendorid_i < desc_i < productid_i < serial_i
+    assert vendorid_i < desc_i < productid_i < product_i < serial_i
 
 
-def test_server_ups_conf_desc_and_productid_optional():
-    """beta carries no desc/productid in the fixture -- must not render an
-    empty/None field."""
+def test_server_ups_conf_desc_productid_product_optional():
+    """beta carries no desc/productid/product in the fixture -- must not
+    render an empty/None field."""
     files = render_server(TOPO, SECRETS_SRV)
     conf = files["/etc/nut/ups.conf"]
     beta = conf.split("[beta]\n", 1)[1]
-    assert "desc" not in beta.split("\n\n", 1)[0]
-    assert "productid" not in beta.split("\n\n", 1)[0]
+    stanza = beta.split("\n\n", 1)[0]
+    assert "desc" not in stanza
+    assert "productid" not in stanza
+    assert 'product = "' not in stanza
 
 
 def test_server_no_override_when_null():

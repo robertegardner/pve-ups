@@ -32,9 +32,10 @@ class DriverSpec(BaseModel):
     #: USB HID report fields NUT's usbhid-ups driver surfaces in ups.conf
     #: alongside vendorid/serial. Real fleet stanzas (live wol capture, see
     #: nut/topology/fixtures/wol/ups.conf in homelab-monitor) carry these;
-    #: the render order is vendorid -> desc -> productid -> serial.
+    #: the render order is vendorid -> desc -> productid -> product -> serial.
     desc: Optional[str] = None
     productid: Optional[str] = None
+    product: Optional[str] = None
     serial: Optional[str] = None
     flags: list[str] = Field(default_factory=list)
 

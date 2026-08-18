@@ -1,7 +1,7 @@
 nut_server: { host: 192.0.2.10, ssh: { host: 192.0.2.10, user: root } }
 quorum: { total_votes: 5, qdevice_votes: 1 }
 ups:
-  alpha: { runtime_low_s: 420, nominal_w: 1200, driver: { port: auto, vendorid: "0764", desc: "CyberPower CP1500PFCLCD", productid: "0601", serial: "AAA1", flags: [onlinedischarge] } }
+  alpha: { runtime_low_s: 420, nominal_w: 1200, driver: { port: auto, vendorid: "0764", desc: "CyberPower CP1500PFCLCD", productid: "0601", product: "CP1500AVRLCD3", serial: "AAA1", flags: [onlinedischarge] } }
   beta:  { runtime_low_s: 600, nominal_w: 1000, driver: { port: auto, vendorid: "0764", serial: "BBB2", flags: [onlinedischarge] } }
 hosts:
   node1:
