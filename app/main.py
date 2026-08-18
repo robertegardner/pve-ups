@@ -213,15 +213,39 @@ def _ingest_agent_result() -> Optional[dict]:
 _NUTCTL_PROBE_TICK_S = 60
 
 _nutctl_last_probe_slot: Optional[datetime] = None
-_nutctl_last_all_green: Optional[bool] = None
+#: The SET of hosts that were failing at the end of the previous sweep; None
+#: until the first sweep completes. Deliberately a set, not an all-green
+#: boolean: a boolean latch only fires on the aggregate all-green -> not-green
+#: edge, so a SECOND host going bad while a first one is still bad is silent
+#: until the whole fleet recovers -- exactly the dead-upsmon blind spot this
+#: probe exists to close. Notifications key off set MEMBERSHIP changes instead.
+_nutctl_last_bad: Optional[set[str]] = None
+
+
+def _probe_failures(result, secrets_loaded: bool) -> list[str]:
+    """Human-readable list of which checks failed for one host. Empty == green.
+
+    `config_match` is only consulted when secrets are loaded (see the caller):
+    without them, every secret-bearing line reads as drift against the redacted
+    render, which is not a fleet regression.
+    """
+    reasons: list[str] = []
+    if not result.ssh_ok:
+        reasons.append("ssh unreachable")
+        return reasons  # the other two signals are None -- nothing else to say
+    if not result.upsmon_active:
+        reasons.append("service check failed")
+    if secrets_loaded and result.config_match is False:
+        reasons.append("config drift")
+    return reasons
 
 
 async def _maybe_run_nutctl_probe() -> None:
     """Run the SSH fleet probe once per self-test slot; store results for
-    GET /api/nutctl/fleet; emit an event (+ notify) on any regression to
-    not-all-green, a quiet db-only event on recovery.
+    GET /api/nutctl/fleet; emit an event (+ notify) whenever a host JOINS the
+    failing set, and a quiet db-only event when hosts leave it.
     """
-    global _nutctl_last_probe_slot, _nutctl_last_all_green
+    global _nutctl_last_probe_slot, _nutctl_last_bad
     assert engine is not None
     cfg = engine.cfg
     if not cfg.observer_mode:
@@ -249,7 +273,9 @@ async def _maybe_run_nutctl_probe() -> None:
     # bypass any test's monkeypatch of the routes-module attribute and make
     # real asyncssh connection attempts on every test that starts the app
     # (fix-round-1, I3).
-    transport = nutctl_routes.AsyncsshTransport(cfg.nutctl_key_path)
+    transport = nutctl_routes.AsyncsshTransport(
+        cfg.nutctl_key_path, cfg.nutctl_known_hosts_path
+    )
     try:
         results = await nutctl_probe_fleet(transport, topo, secrets)
     except Exception as exc:  # noqa: BLE001 - a probe crash must not kill the poll loop
@@ -264,24 +290,36 @@ async def _maybe_run_nutctl_probe() -> None:
     # in that case. ssh_ok/upsmon_active alone still catch a genuinely dead host.
     secrets_loaded = bool(secrets)
 
-    def _green(r) -> bool:
-        ok = bool(r.ssh_ok) and bool(r.upsmon_active)
-        if secrets_loaded:
-            ok = ok and r.config_match is not False
-        return ok
+    failures = {
+        name: _probe_failures(r, secrets_loaded) for name, r in results.items()
+    }
+    bad = {name for name, reasons in failures.items() if reasons}
 
-    bad = sorted(name for name, r in results.items() if not _green(r))
-    all_green = not bad
+    prev_bad = _nutctl_last_bad
+    # First sweep of the process: everything currently bad counts as newly bad,
+    # so a fleet that comes up already broken still notifies once.
+    newly_bad = sorted(bad if prev_bad is None else bad - prev_bad)
+    recovered = sorted((prev_bad - bad) if prev_bad is not None else set())
+    still_bad = sorted(bad - set(newly_bad))
 
-    if bad and _nutctl_last_all_green is not False:
-        subject = "nutctl fleet probe: regression"
-        body = f"Not all-green: {', '.join(bad)}"
+    if newly_bad:
+        # "failed" is a deliberate severity keyword (app/notify.py: _severity)
+        # -- a host dropping out of the fleet is the one thing this probe is
+        # for, and it must not go out at ntfy's default priority.
+        subject = f"nutctl fleet probe: {len(newly_bad)} host(s) failed"
+        lines = [f"{name}: {', '.join(failures[name])}" for name in newly_bad]
+        body = "Newly failing:\n" + "\n".join(lines)
+        if still_bad:
+            body += "\nStill failing: " + ", ".join(still_bad)
         db.log_event(subject, body, db.WARNING)
         await notify.notify(engine.cfg.notifications, f"[PVE-UPS] {subject}", body, {})
-    elif all_green and _nutctl_last_all_green is False:
-        db.log_event("nutctl fleet probe: recovered", "Fleet is all-green again.", db.INFO)
 
-    _nutctl_last_all_green = all_green
+    if recovered:
+        body = "Recovered: " + ", ".join(recovered)
+        body += "\nFleet is all-green again." if not bad else f"\nStill failing: {', '.join(sorted(bad))}"
+        db.log_event("nutctl fleet probe: recovered", body, db.INFO)
+
+    _nutctl_last_bad = bad
 
 
 async def _nutctl_probe_loop() -> None:

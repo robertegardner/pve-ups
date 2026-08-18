@@ -109,13 +109,13 @@ def _render_upssched_env(host: HostSpec) -> str:
 
 def _render_ups_stanza(name: str, ups: UpsSpec) -> str:
     """Render one `ups.conf` stanza, matching the live Debian/NUT convention
-    (see nut/topology/fixtures/wol/ups.conf in homelab-monitor): the header
-    is bare, every body line is indented 8 spaces, and `driver`/`port`/
-    `vendorid`/`desc`/`productid`/`product`/`serial` are all double-quoted.
-    Field order is driver -> port -> vendorid -> desc -> productid ->
-    product -> serial -> flags -> override.battery.runtime.low;
-    desc/productid/product are omitted when unset (live wol has 3 of 5
-    stanzas with an active `product` line, the other 2 either omit it or
+    (from the NUT server capture kept as a fixture in the private ops repo):
+    the header is bare, every body line is indented 8 spaces, and
+    `driver`/`port`/`vendorid`/`desc`/`productid`/`product`/`serial` are all
+    double-quoted. Field order is driver -> port -> vendorid -> desc ->
+    productid -> product -> serial -> flags -> override.battery.runtime.low;
+    desc/productid/product are omitted when unset (in the live capture 3 of 5
+    stanzas have an active `product` line, the other 2 either omit it or
     carry it commented-out -- commented-out isn't representable/rendered).
     """
     d = ups.driver
@@ -156,15 +156,16 @@ def _render_upsd_users(secrets: dict[str, str] | None) -> str:
 
 
 def render_server(topo: Topology, secrets: dict[str, str] | None) -> dict[str, str]:
-    """Render wol's server-side NUT files: `ups.conf` driver stanzas + `upsd.users`.
+    """Render the NUT server's own files: `ups.conf` driver stanzas + `upsd.users`.
 
     UPS stanzas are emitted sorted by NUT name for deterministic output.
     `upsd.users` carries exactly two 2-space-indented accounts, matching the
-    live capture: `monuser` (upsmon master, the wol host itself) and
-    `nutnode` (upsmon slave, shared by every NUT client host). There is no
-    separate Synology account -- discstation's DSM NUT client authenticates
-    as `monuser` directly (see nut/nas/README.md); the design spec's
-    `synology-monuser` account never existed on the live fleet.
+    live capture: `monuser` (upsmon master -- the NUT server host itself, and
+    any vendor NAS client that hardcodes that account) and `nutnode` (upsmon
+    slave, shared by every scripted NUT client host). There is no separate
+    per-vendor account: the DSM-based NAS authenticates as `monuser`
+    directly, so the design spec's `synology-monuser` account -- which never
+    existed on a real fleet -- is deliberately not rendered.
     """
     return {
         "/etc/nut/ups.conf": _render_ups_conf(topo),
@@ -172,12 +173,11 @@ def render_server(topo: Topology, secrets: dict[str, str] | None) -> dict[str, s
     }
 
 
-#: Fixed footer nut-dw (the Unraid NAS plugin terramaster runs) appends to
-#: every GUI-managed file it owns: the plugin regenerates specific line
-#: numbers and leaves the rest as placeholder blanks, always closing with
-#: this comment naming which lines it overwrites. Verbatim from the live
-#: capture (nut/topology/fixtures/terramaster/{upsmon.conf,nut.conf} in
-#: homelab-monitor) -- not something nutctl invents, just reproduces.
+#: Fixed footer the nut-dw NAS plugin appends to every GUI-managed file it
+#: owns: the plugin regenerates specific line numbers and leaves the rest as
+#: placeholder blanks, always closing with this comment naming which lines it
+#: overwrites. Verbatim from a live NAS capture (kept as a fixture in the
+#: private ops repo) -- not something nutctl invents, just reproduces.
 _NAS_RESERVED_FOOTER = (
     "# If not in manual mode, the following lines are reserved and overwritten by GUI:\n"
 )
@@ -217,12 +217,12 @@ def render_host(topo: Topology, name: str, secrets: dict[str, str] | None) -> di
     (``type: display-only``), matching dict-style "no such renderable key"
     semantics rather than inventing a bespoke exception.
 
-    ``type: nas-nut-client`` hosts (e.g. terramaster's Unraid nut-dw plugin)
-    are GUI-managed appliances, not scriptable Debian `nut-client` installs
-    -- they get a completely different two-file render (`nut.conf` +
+    ``type: nas-nut-client`` hosts (a NAS running the nut-dw plugin) are
+    GUI-managed appliances, not scriptable Debian `nut-client` installs --
+    they get a completely different two-file render (`nut.conf` +
     `upsmon.conf` only, no upssched/sudoers, monitoring account `monuser`
     not `nutnode`) matching the live plugin's own generated layout exactly.
-    See task-10-report.md gap #4 (homelab-monitor) for the byte evidence.
+    The byte evidence is the live NAS capture in the private ops repo.
     """
     host = topo.hosts[name]
     if host.type == "display-only":

@@ -6,8 +6,12 @@ non-display host plus the NUT server itself -- and reports three independent
 signals per host:
 
 - ``ssh_ok``: a trivial ``true`` round trip succeeded.
-- ``upsmon_active``: ``systemctl is-active nut-monitor`` (``nut-server`` for
-  the NUT server) reported "active". ``None`` when ssh failed.
+- ``upsmon_active``: the host's service check exited 0. By default that is
+  ``systemctl is-active nut-monitor`` (``nut-server`` for the NUT server); a
+  host can override it with ``service_check`` in the topology, which is what
+  keeps non-systemd appliances (a NAS running a vendor NUT plugin, where
+  ``systemctl`` does not exist at all) from reading as permanently dead.
+  ``None`` when ssh failed.
 - ``config_match``: every live file this host is supposed to carry matches,
   byte for byte, the *secret-substituted* render for that host -- never the
   redacted placeholder render, which would never match a real host and would
@@ -43,6 +47,11 @@ SERVER_KEY = "server"
 _CLIENT_SERVICE = "nut-monitor"
 _SERVER_SERVICE = "nut-server"
 
+#: Default per-role liveness commands. rc 0 == healthy. A host whose topology
+#: entry sets ``service_check`` replaces the client default entirely.
+_CLIENT_CHECK = f"systemctl is-active {_CLIENT_SERVICE}"
+_SERVER_CHECK = f"systemctl is-active {_SERVER_SERVICE}"
+
 
 @dataclass
 class ProbeResult:
@@ -55,23 +64,29 @@ class ProbeResult:
 
 
 async def _probe_one(
-    t: Transport, ssh: SshSpec, rendered: dict[str, str], service: str
+    t: Transport, ssh: SshSpec, rendered: dict[str, str], service_check: str
 ) -> ProbeResult:
     """Probe a single host/server: reachability, then (only if reachable)
-    service health + config drift against `rendered`."""
+    service health + config drift against `rendered`.
+
+    `service_check` is a full shell command; only its rc is consulted (0 ==
+    healthy). `systemctl is-active` already exits nonzero for every non-active
+    state, and an override like `pgrep -x upsmon` has no status word to print
+    at all -- so rc is the one signal that means the same thing for both.
+    """
     rc, _out, err = await t.run(ssh, "true")
     if rc != 0:
         detail = f"ssh unreachable: {err.strip() or f'rc={rc}'}"
         return ProbeResult(ssh_ok=False, upsmon_active=None, config_match=None, detail=detail)
 
-    rc, out, _err = await t.run(ssh, f"systemctl is-active {service}")
-    upsmon_active = rc == 0 and out.strip() == "active"
+    rc, _out, _err = await t.run(ssh, service_check)
+    upsmon_active = rc == 0
 
     live = await fetch_live(t, ssh, list(rendered.keys()))
     mismatches = sorted(path for path, content in rendered.items() if live.get(path) != content)
     config_match = not mismatches
 
-    detail = f"{service} {'active' if upsmon_active else 'NOT active'}"
+    detail = f"`{service_check}` {'ok' if upsmon_active else f'FAILED (rc={rc})'}"
     detail += f"; config drift: {', '.join(mismatches)}" if mismatches else "; config matches"
 
     return ProbeResult(ssh_ok=True, upsmon_active=upsmon_active, config_match=config_match, detail=detail)
@@ -88,13 +103,15 @@ async def _probe_named(
     try:
         if name == SERVER_KEY:
             rendered = render_server(topo, secrets)
-            result = await _probe_one(t, topo.nut_server.ssh, rendered, _SERVER_SERVICE)
+            result = await _probe_one(t, topo.nut_server.ssh, rendered, _SERVER_CHECK)
         else:
             host = topo.hosts[name]
             if host.ssh is None:  # pragma: no cover - display-only never reaches here
                 raise ValueError(f"host {name} has no ssh spec")
             rendered = render_host(topo, name, secrets)
-            result = await _probe_one(t, host.ssh, rendered, _CLIENT_SERVICE)
+            result = await _probe_one(
+                t, host.ssh, rendered, host.service_check or _CLIENT_CHECK
+            )
     except Exception as exc:
         result = ProbeResult(ssh_ok=False, upsmon_active=None, config_match=None,
                               detail=f"probe error: {exc}")

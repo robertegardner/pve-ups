@@ -152,6 +152,9 @@ async def test_dead_upsmon_reports_upsmon_active_false():
     responses = _green_responses()
     for host_responses in responses.values():
         host_responses["systemctl is-active nut-monitor"] = (3, "inactive\n", "")
+        # nas1 has no systemd and runs its own service_check -- kill that too,
+        # so this stays a "every client's upsmon is dead" scenario.
+        host_responses["pgrep -x upsmon"] = (1, "", "")
     t = FakeTransport(responses)
 
     results = await probe.probe_fleet(t, TOPO, SECRETS)
@@ -159,7 +162,8 @@ async def test_dead_upsmon_reports_upsmon_active_false():
     for name in ("node1", "node2", "node3", "nas1"):
         assert results[name].upsmon_active is False, name
         assert results[name].ssh_ok is True
-    assert "not active" in results["node1"].detail.lower()
+    assert "failed" in results["node1"].detail.lower()
+    assert "systemctl is-active nut-monitor" in results["node1"].detail
 
 
 async def test_dead_nut_server_reports_upsmon_active_false():
@@ -272,3 +276,54 @@ async def test_hosts_are_probed_concurrently(monkeypatch):
     await probe.probe_fleet(t, TOPO, SECRETS)
 
     assert calls and calls[0] == len({"node1", "node2", "node3", "nas1", probe.SERVER_KEY})
+
+
+# --- per-host service_check override (non-systemd appliances) -------------
+
+async def test_service_check_override_replaces_the_systemctl_default():
+    """A `nas-nut-client` on a distro with no systemd can never pass
+    `systemctl is-active nut-monitor` (rc 127 = command not found), which
+    would pin it red on every sweep forever. Its topology entry's
+    `service_check` must be the command actually run instead."""
+    nas_ssh = TOPO.hosts["nas1"].ssh
+    assert nas_ssh is not None
+    responses = _green_responses()
+    # Model the real failure mode: systemctl does not exist on this host.
+    responses[nas_ssh.host]["systemctl"] = (127, "", "systemctl: not found")
+    responses[nas_ssh.host]["pgrep -x upsmon"] = (0, "1234\n", "")
+    t = FakeTransport(responses)
+
+    results = await probe.probe_fleet(t, TOPO, SECRETS)
+
+    nas_cmds = [c for ssh, c, _ in t.calls if ssh.host == nas_ssh.host]
+    assert "pgrep -x upsmon" in nas_cmds
+    assert not any(c.startswith("systemctl") for c in nas_cmds)
+    assert results["nas1"].upsmon_active is True
+    assert results["nas1"].config_match is True
+
+
+async def test_service_check_override_failure_reads_as_not_active():
+    nas_ssh = TOPO.hosts["nas1"].ssh
+    assert nas_ssh is not None
+    responses = _green_responses()
+    responses[nas_ssh.host]["pgrep -x upsmon"] = (1, "", "")
+    t = FakeTransport(responses)
+
+    results = await probe.probe_fleet(t, TOPO, SECRETS)
+
+    assert results["nas1"].ssh_ok is True
+    assert results["nas1"].upsmon_active is False
+    assert "pgrep -x upsmon" in results["nas1"].detail
+
+
+async def test_hosts_without_override_still_use_the_systemd_default():
+    node1_ssh = TOPO.hosts["node1"].ssh
+    assert node1_ssh is not None
+    t = FakeTransport(_green_responses())
+
+    await probe.probe_fleet(t, TOPO, SECRETS)
+
+    node1_cmds = [c for ssh, c, _ in t.calls if ssh.host == node1_ssh.host]
+    assert "systemctl is-active nut-monitor" in node1_cmds
+    srv_cmds = [c for ssh, c, _ in t.calls if ssh.host == TOPO.nut_server.ssh.host]
+    assert "systemctl is-active nut-server" in srv_cmds

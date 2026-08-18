@@ -298,6 +298,12 @@ class AppConfig(BaseModel):
     # SSH key used by the nutctl deploy/preview/probe routes (app/nutctl/routes.py)
     # to reach the fleet's hosts + the NUT server; never written by the web UI form.
     nutctl_key_path: str = "/etc/pve-usv/id_ed25519_nutctl"
+    # Pinned SSH host keys for that same fleet. The nutctl transport REFUSES to
+    # connect when this file is missing rather than falling back to unverified
+    # host keys: the channel writes sudoers drop-ins and ships NUT passwords, so
+    # an unauthenticated peer would be a credential handout. Populate it with one
+    # ssh-keyscan per host when the nutctl deploy key is authorized.
+    nutctl_known_hosts_path: str = "/etc/pve-usv/known_hosts_nutctl"
     # YAML {nutnode_pass, monuser_pass}; missing file means "no
     # secrets configured" -- deploy/preview degrade safely (see routes.py), the
     # observer probe skips the config_match signal (see main.py).

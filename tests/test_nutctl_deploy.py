@@ -402,3 +402,170 @@ def test_normalize_rc_treats_none_exit_status_as_failure_not_success():
 
     assert rc != 0
     assert rc == 255
+
+
+# --- F3: the reload sequence is an interlock, not a best-effort list -------
+
+async def test_reload_sequence_halts_on_the_first_failed_command():
+    """The NUT server's reload composition is per-UPS (restart driver, then
+    prove `upsc` answers). A driver that fails to come back MUST stop the
+    sweep: marching on would bounce the remaining UPSes' drivers blind and
+    take the whole monitoring source down one UPS at a time."""
+    t = FakeTransport({"upsc alpha@localhost": (1, "", "Driver not connected")})
+
+    result = await deploy.deploy_host(
+        t,
+        _ssh(),
+        {"/etc/nut/ups.conf": "x\n"},
+        reload_cmds=[
+            "systemctl restart nut-driver@alpha",
+            "upsc alpha@localhost",
+            "systemctl restart nut-driver@beta",
+            "upsc beta@localhost",
+            "systemctl reload nut-server",
+        ],
+        on_battery=False,
+    )
+
+    assert result.ok is False
+    assert "systemctl restart nut-driver@alpha" in t.cmds
+    assert "upsc alpha@localhost" in t.cmds
+    # everything after the failure was left untouched
+    assert "systemctl restart nut-driver@beta" not in t.cmds
+    assert "upsc beta@localhost" not in t.cmds
+    assert "systemctl reload nut-server" not in t.cmds
+    # and the report names what was skipped, so the operator knows which
+    # UPSes still carry the old driver
+    assert "HALTED" in result.detail
+    assert "systemctl restart nut-driver@beta" in result.detail
+    assert "upsc beta@localhost" in result.detail
+    assert "systemctl reload nut-server" in result.detail
+
+
+async def test_reload_sequence_runs_every_command_when_all_succeed():
+    t = FakeTransport()
+    cmds = [
+        "systemctl restart nut-driver@alpha",
+        "upsc alpha@localhost",
+        "systemctl restart nut-driver@beta",
+        "upsc beta@localhost",
+    ]
+
+    result = await deploy.deploy_host(
+        t, _ssh(), {"/etc/nut/ups.conf": "x\n"}, reload_cmds=cmds, on_battery=False
+    )
+
+    assert result.ok is True
+    for cmd in cmds:
+        assert cmd in t.cmds
+    assert "HALTED" not in result.detail
+
+
+# --- F2: per-host service-check override -----------------------------------
+
+async def test_verify_uses_the_service_check_override_when_given():
+    """A host with no systemd would fail `systemctl is-active nut-monitor`
+    with rc 127 forever -- verified=False on every deploy even when the files
+    landed perfectly. The override is the command actually run."""
+    t = FakeTransport({
+        "systemctl": (127, "", "systemctl: not found"),
+        "pgrep -x upsmon": (0, "1234\n", ""),
+        "cat -- /etc/nut/nut.conf": (0, "MODE = slave\n", ""),
+    })
+
+    result = await deploy.deploy_host(
+        t,
+        _ssh(),
+        {"/etc/nut/nut.conf": "MODE = slave\n"},
+        reload_cmds=[],
+        on_battery=False,
+        service_check="pgrep -x upsmon",
+    )
+
+    assert result.ok is True
+    assert result.verified is True
+    assert "pgrep -x upsmon" in t.cmds
+    assert not any(c.startswith("systemctl") for c in t.cmds)
+
+
+async def test_verify_falls_back_to_the_systemd_default_without_an_override():
+    t = FakeTransport({"cat -- /etc/nut/nut.conf": (0, "MODE = netclient\n", "")})
+
+    result = await deploy.deploy_host(
+        t, _ssh(), {"/etc/nut/nut.conf": "MODE = netclient\n"}, reload_cmds=[], on_battery=False
+    )
+
+    assert result.verified is True
+    assert deploy.DEFAULT_SERVICE_CHECK in t.cmds
+
+
+async def test_verify_reads_only_rc_not_the_status_word():
+    """`systemctl is-active` already exits nonzero for every non-active state,
+    and an override like `pgrep` prints a pid, not "active" -- rc is the one
+    signal that means the same thing for both."""
+    t = FakeTransport({
+        deploy.DEFAULT_SERVICE_CHECK: (0, "", ""),  # rc 0, no status word at all
+        "cat -- /etc/nut/nut.conf": (0, "MODE = netclient\n", ""),
+    })
+
+    result = await deploy.deploy_host(
+        t, _ssh(), {"/etc/nut/nut.conf": "MODE = netclient\n"}, reload_cmds=[], on_battery=False
+    )
+
+    assert result.verified is True
+
+
+async def test_revert_honors_the_service_check_override():
+    t = FakeTransport({
+        "systemctl": (127, "", "systemctl: not found"),
+        "pgrep -x upsmon": (0, "1234\n", ""),
+        "ls -1 -- /etc/nut/nut.conf.pre-nutctl.*": (0, "/etc/nut/nut.conf.pre-nutctl.100\n", ""),
+    })
+
+    result = await deploy.revert_host(
+        t, _ssh(), ["/etc/nut/nut.conf"], service_check="pgrep -x upsmon"
+    )
+
+    assert result.ok is True
+    assert result.verified is True
+    assert "pgrep -x upsmon" in t.cmds
+
+
+# --- M1: SSH host keys are pinned, never disabled --------------------------
+
+def test_transport_uses_the_known_hosts_file_when_it_exists(tmp_path):
+    kh = tmp_path / "known_hosts_nutctl"
+    kh.write_text("h1.example.test ssh-ed25519 AAAA\n", encoding="utf-8")
+
+    t = deploy.AsyncsshTransport(str(tmp_path / "key"), str(kh))
+
+    assert t.resolve_known_hosts() == str(kh)
+
+
+def test_transport_refuses_when_the_known_hosts_file_is_missing(tmp_path):
+    """No silent fallback to known_hosts=None: this channel writes sudoers
+    drop-ins and ships NUT passwords, so an unverified peer is a credential
+    handout, not an inconvenience."""
+    missing = tmp_path / "nope" / "known_hosts_nutctl"
+
+    t = deploy.AsyncsshTransport(str(tmp_path / "key"), str(missing))
+
+    with pytest.raises(deploy.KnownHostsUnavailable) as exc:
+        t.resolve_known_hosts()
+    assert str(missing) in str(exc.value)
+
+
+def test_transport_default_known_hosts_path_is_the_pinned_appliance_file(tmp_path):
+    t = deploy.AsyncsshTransport(str(tmp_path / "key"))
+
+    assert t._known_hosts_path == deploy.DEFAULT_KNOWN_HOSTS_PATH
+    assert deploy.DEFAULT_KNOWN_HOSTS_PATH == "/etc/pve-usv/known_hosts_nutctl"
+
+
+def test_transport_never_passes_known_hosts_none_to_asyncssh():
+    """Source-level guard: `known_hosts=None` disables host-key verification
+    outright. It must not reappear anywhere in the transport."""
+    import inspect
+
+    src = inspect.getsource(deploy.AsyncsshTransport.run)
+    assert "known_hosts=None" not in src

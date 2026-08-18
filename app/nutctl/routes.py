@@ -482,7 +482,7 @@ async def get_preview():
     # either way, since _structural_redact does not depend on knowing the real
     # values at all; _mask_secrets just has nothing extra to mask with.
     secrets = load_secrets(eng.cfg.nutctl_secrets_path)
-    t = AsyncsshTransport(eng.cfg.nutctl_key_path)
+    t = AsyncsshTransport(eng.cfg.nutctl_key_path, eng.cfg.nutctl_known_hosts_path)
 
     names = [SERVER_KEY] + [n for n, h in topo.hosts.items() if h.type != "display-only"]
     return {name: await _diff_named(t, topo, secrets, name) for name in names}
@@ -514,6 +514,18 @@ async def _deploy_server(t, topo: Topology, secrets: dict[str, str], on_battery:
     # changed (fix-round-1, I9): upsd only learns about added/removed ups.conf
     # stanzas on start/reload, so a ups.conf-only change still needs it -- the
     # driver restarts run first, the (single, de-duplicated) reload after.
+    #
+    # Drivers are bounced through their systemd units (`nut-driver@<ups>`, the
+    # unit template nut-driver-enumerator generates), NOT `upsdrvctl
+    # stop/start`. On a unit-managed NUT server upsdrvctl kills the unit's
+    # MAINPID and respawns an unmanaged process behind systemd's back: the
+    # unit goes failed-or-duplicate depending on its Restart= policy, and the
+    # next boot can end up starting the driver twice.
+    #
+    # The per-UPS triplet is (restart, verify) and the sequence is interlocked
+    # by deploy_host, which HALTS on the first nonzero rc: a driver that does
+    # not answer `upsc` after its restart stops the sweep instead of letting
+    # it march on and knock the remaining UPSes off the monitoring source too.
     ups_conf_changed = live.get("/etc/nut/ups.conf") != rendered.get("/etc/nut/ups.conf")
     users_changed = live.get("/etc/nut/upsd.users") != rendered.get("/etc/nut/upsd.users")
 
@@ -521,8 +533,7 @@ async def _deploy_server(t, topo: Topology, secrets: dict[str, str], on_battery:
     if ups_conf_changed:
         for name in sorted(topo.ups):
             reload_cmds += [
-                f"upsdrvctl stop {name}",
-                f"upsdrvctl start {name}",
+                f"systemctl restart nut-driver@{name}",
                 f"upsc {name}@localhost",
             ]
     if ups_conf_changed or users_changed:
@@ -535,7 +546,16 @@ async def _deploy_client(t, topo: Topology, secrets: dict[str, str], name: str, 
     host = topo.hosts[name]
     assert host.ssh is not None
     rendered = render_host(topo, name, secrets)
-    return await deploy_host(t, host.ssh, rendered, reload_cmds=["upsmon -c reload"], on_battery=on_battery)
+    return await deploy_host(
+        t,
+        host.ssh,
+        rendered,
+        reload_cmds=["upsmon -c reload"],
+        on_battery=on_battery,
+        # None -> the systemd default; set for appliances without systemd,
+        # which would otherwise report verified=False on every deploy.
+        service_check=host.service_check,
+    )
 
 
 async def _deploy_named(t, topo: Topology, secrets: dict[str, str], name: str, on_battery: bool) -> DeployResult:
@@ -587,7 +607,7 @@ async def _deploy_route(names: Optional[list[str]]) -> dict[str, dict]:
         detail += " -- refusing to deploy placeholder text as a real password"
         raise _Conflict409({"detail": detail, "missing_keys": missing})
 
-    t = AsyncsshTransport(cfg.nutctl_key_path)
+    t = AsyncsshTransport(cfg.nutctl_key_path, cfg.nutctl_known_hosts_path)
     out: dict[str, dict] = {}
     for name in names:
         on_battery = _fleet_battery_refusal(eng) is not None
@@ -655,17 +675,19 @@ async def revert_one(host: str, request: Request):
     if host == SERVER_KEY:
         ssh = topo.nut_server.ssh
         paths = list(render_server(topo, None).keys())
+        service_check = None
     else:
         host_spec = topo.hosts[host]
         assert host_spec.ssh is not None
         ssh = host_spec.ssh
         paths = list(render_host(topo, host, None).keys())
+        service_check = host_spec.service_check
 
     # Deliberately NOT gated by the battery/telemetry interlock: reverting a
     # bad push is exactly the kind of thing you'd want to do mid-outage (see
     # deploy.py's revert_host docstring).
-    t = AsyncsshTransport(eng.cfg.nutctl_key_path)
-    result = await revert_host(t, ssh, paths)
+    t = AsyncsshTransport(eng.cfg.nutctl_key_path, eng.cfg.nutctl_known_hosts_path)
+    result = await revert_host(t, ssh, paths, service_check)
     _audit(
         f"nutctl revert {host}",
         f"by {actor}: ok={result.ok} verified={result.verified} - {result.detail}",

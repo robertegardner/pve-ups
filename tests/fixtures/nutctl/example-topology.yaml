@@ -30,6 +30,10 @@ hosts:
     type: nas-nut-client
     feeds: [alpha]
     ssh: { host: 192.0.2.31, user: root }
+    # This appliance's distro has no systemd at all -- `systemctl is-active
+    # nut-monitor` would exit 127 forever, pinning the fleet probe red and
+    # making every deploy report verified=False even when the files landed.
+    service_check: pgrep -x upsmon
     tiers: [ { tier: T2, trigger: lowbatt, action: shutdown } ]
   nas2:
     type: display-only

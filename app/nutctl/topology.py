@@ -30,9 +30,9 @@ class DriverSpec(BaseModel):
     port: str = "auto"
     vendorid: Optional[str] = None
     #: USB HID report fields NUT's usbhid-ups driver surfaces in ups.conf
-    #: alongside vendorid/serial. Real fleet stanzas (live wol capture, see
-    #: nut/topology/fixtures/wol/ups.conf in homelab-monitor) carry these;
-    #: the render order is vendorid -> desc -> productid -> product -> serial.
+    #: alongside vendorid/serial. Real-world stanzas (see the live NUT server
+    #: capture kept as fixtures in the private ops repo) carry these; the
+    #: render order is vendorid -> desc -> productid -> product -> serial.
     desc: Optional[str] = None
     productid: Optional[str] = None
     product: Optional[str] = None
@@ -61,6 +61,17 @@ class HostSpec(BaseModel):
     policy: Literal["all", "any"] = "all"
     votes: int = 0
     ssh: Optional[SshSpec] = None  # required unless display-only
+    #: Full shell command that answers "is this host's NUT client alive?";
+    #: rc 0 means healthy, anything else (including "command not found")
+    #: means not. ``None`` (the default) selects the built-in check for the
+    #: host type -- ``systemctl is-active nut-monitor`` on a systemd host.
+    #: Override it for appliances that have no systemd at all: a NAS running
+    #: a vendor NUT plugin on a non-systemd distro can never pass the default
+    #: check (systemctl doesn't exist, rc 127), which would pin the fleet
+    #: probe permanently red and make every deploy report verified=False even
+    #: when the files landed correctly. ``pgrep -x upsmon`` is the usual
+    #: replacement there.
+    service_check: Optional[str] = None
     tiers: list[TierSpec] = Field(default_factory=list)
     on_online: list[str] = Field(default_factory=list)
     note: str = ""

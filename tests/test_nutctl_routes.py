@@ -80,10 +80,13 @@ class FakeTransport:
 
 
 def _fake_transport_factory(responses: dict | None = None):
-    """Matches the AsyncsshTransport(key_path) call signature at the seam."""
+    """Matches the AsyncsshTransport(key_path, known_hosts_path) call signature
+    at the seam -- the second argument is the pinned-host-key file (M1); a fake
+    that only accepted one arg would fail with a TypeError instead of proving
+    the real signature is what the routes call."""
     made: dict = {}
 
-    def factory(key_path: str) -> FakeTransport:
+    def factory(key_path: str, known_hosts_path: str | None = None) -> FakeTransport:
         t = FakeTransport(responses)
         made["transport"] = t
         return t
@@ -494,7 +497,7 @@ async def test_probe_resolves_transport_through_the_single_nutctl_routes_seam(cl
 
     calls: list[str] = []
 
-    def fake_factory(key_path: str) -> FakeTransport:
+    def fake_factory(key_path: str, known_hosts_path: str | None = None) -> FakeTransport:
         calls.append(key_path)
         return FakeTransport(dict(_ACTIVE_RESPONSES))
 
@@ -650,9 +653,11 @@ def test_deploy_server_reloads_nut_server_when_only_ups_conf_changed(client, mon
     cmds = factory.made["transport"].cmds
     assert "systemctl reload nut-server" in cmds
     assert cmds.count("systemctl reload nut-server") == 1  # never duplicated
-    stop_idx = next(i for i, c in enumerate(cmds) if c.startswith("upsdrvctl stop"))
+    restart_idx = next(
+        i for i, c in enumerate(cmds) if c.startswith("systemctl restart nut-driver@")
+    )
     reload_idx = cmds.index("systemctl reload nut-server")
-    assert stop_idx < reload_idx  # driver restarts first, then reload (I9 order)
+    assert restart_idx < reload_idx  # driver restarts first, then reload (I9 order)
 
 
 # --- revert -------------------------------------------------------------
@@ -764,3 +769,202 @@ def test_fleet_is_empty_before_the_first_probe_and_populated_after(client):
     assert body["at"] == "2026-08-18T00:00:00+00:00"
     assert body["hosts"]["node1"]["ssh_ok"] is True
     assert body["hosts"][SERVER_KEY]["config_match"] is True
+
+
+# --- F4/F3: server driver bounce is unit-managed and interlocked ------------
+
+def test_deploy_server_restarts_drivers_through_their_systemd_units(client, monkeypatch):
+    """The NUT server's drivers are systemd-unit-managed (`nut-driver@<ups>`,
+    the template nut-driver-enumerator generates). `upsdrvctl stop/start`
+    kills the unit's MAINPID and respawns an unmanaged process behind
+    systemd's back -- the unit ends up failed/duplicated and a later boot can
+    double-start the driver."""
+    _login(client)
+    _add_healthy_ups()
+    responses = dict(_ACTIVE_RESPONSES)
+    responses["cat -- /etc/nut/ups.conf"] = (0, "DRIFTED\n", "")
+    factory = _fake_transport_factory(responses)
+    monkeypatch.setattr(nutctl_routes, "AsyncsshTransport", factory)
+
+    resp = client.post(f"/api/nutctl/deploy/{SERVER_KEY}")
+    assert resp.status_code == 200
+
+    cmds = factory.made["transport"].cmds
+    assert "systemctl restart nut-driver@alpha" in cmds
+    assert "systemctl restart nut-driver@beta" in cmds
+    assert not any(c.startswith("upsdrvctl") for c in cmds)
+    # each restart is immediately followed by its own upsc verification
+    for name in ("alpha", "beta"):
+        i = cmds.index(f"systemctl restart nut-driver@{name}")
+        assert cmds[i + 1] == f"upsc {name}@localhost"
+
+
+def test_deploy_server_halts_remaining_driver_restarts_when_a_upsc_fails(client, monkeypatch):
+    """The serialized-with-verify interlock: a driver that doesn't answer
+    `upsc` after its restart must stop the sweep, not let it bounce the next
+    UPS's driver blind."""
+    _login(client)
+    _add_healthy_ups()
+    responses = dict(_ACTIVE_RESPONSES)
+    responses["cat -- /etc/nut/ups.conf"] = (0, "DRIFTED\n", "")
+    responses["upsc alpha@localhost"] = (1, "", "Driver not connected")
+    factory = _fake_transport_factory(responses)
+    monkeypatch.setattr(nutctl_routes, "AsyncsshTransport", factory)
+
+    resp = client.post(f"/api/nutctl/deploy/{SERVER_KEY}")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["ok"] is False
+
+    cmds = factory.made["transport"].cmds
+    assert "systemctl restart nut-driver@alpha" in cmds
+    assert "systemctl restart nut-driver@beta" not in cmds  # left untouched
+    assert "systemctl reload nut-server" not in cmds
+    assert "nut-driver@beta" in body["detail"]  # the report names what was skipped
+
+
+def test_deploy_nas_client_verifies_with_its_service_check_override(client, monkeypatch):
+    """nas1 has no systemd; without the override every deploy to it would come
+    back verified=False even when the files landed."""
+    _login(client)
+    _add_healthy_ups()
+    responses = {
+        "true": (0, "", ""),
+        "systemctl": (127, "", "systemctl: not found"),
+        "pgrep -x upsmon": (0, "1234\n", ""),
+    }
+    topo = load_topology(FIX / "example-topology.yaml")
+    for path, content in render_host(topo, "nas1", SECRETS).items():
+        responses[f"cat -- {path}"] = (0, content, "")
+    factory = _fake_transport_factory(responses)
+    monkeypatch.setattr(nutctl_routes, "AsyncsshTransport", factory)
+
+    resp = client.post("/api/nutctl/deploy/nas1")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["verified"] is True, body["detail"]
+
+    cmds = factory.made["transport"].cmds
+    assert "pgrep -x upsmon" in cmds
+    assert not any(c.startswith("systemctl is-active") for c in cmds)
+
+
+# --- F1: fleet-probe notifications are per-host, not one-shot ---------------
+
+def _probe_result(*, green: bool = True, ssh_ok: bool = True) -> ProbeResult:
+    if not ssh_ok:
+        return ProbeResult(ssh_ok=False, upsmon_active=None, config_match=None,
+                           detail="ssh unreachable: rc=255")
+    return ProbeResult(ssh_ok=True, upsmon_active=green, config_match=True,
+                       detail="ok" if green else "service check FAILED (rc=3)")
+
+
+class _ProbeDriver:
+    """Drives `_maybe_run_nutctl_probe` sweep by sweep with canned results and
+    captures every notification it sends."""
+
+    def __init__(self, monkeypatch):
+        self.monkeypatch = monkeypatch
+        self.notified: list[tuple[str, str]] = []
+        self.events: list[tuple[str, str, int]] = []
+        self._results: dict[str, ProbeResult] = {}
+
+        async def fake_probe(transport, topo, secrets):
+            return dict(self._results)
+
+        async def fake_notify(_notifications, subject, body, _payload):
+            self.notified.append((subject, body))
+
+        def fake_log_event(subject, body, level):
+            self.events.append((subject, body, level))
+
+        monkeypatch.setattr(main_mod, "nutctl_probe_fleet", fake_probe)
+        monkeypatch.setattr(main_mod.notify, "notify", fake_notify)
+        monkeypatch.setattr(main_mod.db, "log_event", fake_log_event)
+        # Both latches are process-global; start every scenario from scratch
+        # (patched, not just assigned, so monkeypatch restores them after the
+        # test -- `sweep` writes the slot latch directly).
+        monkeypatch.setattr(main_mod, "_nutctl_last_bad", None)
+        monkeypatch.setattr(main_mod, "_nutctl_last_probe_slot", None)
+
+    async def sweep(self, bad_hosts: set[str], names=("server", "node1", "node2")) -> None:
+        self._results = {
+            n: _probe_result(green=n not in bad_hosts) for n in names
+        }
+        # The slot latch would skip a second sweep inside the same self-test
+        # slot; these tests are about sweep-to-sweep transitions, not cadence.
+        main_mod._nutctl_last_probe_slot = None
+        await main_mod._maybe_run_nutctl_probe()
+
+
+async def test_probe_notifies_when_a_second_host_joins_an_already_bad_fleet(client, monkeypatch):
+    """The Jul-29 blind spot: with an aggregate all-green latch, once ANY host
+    is red a newly-dead upsmon anywhere else is silent until the whole fleet
+    first recovers. Notifications must key off the per-host bad SET."""
+    d = _ProbeDriver(monkeypatch)
+
+    await d.sweep({"node1"})
+    assert len(d.notified) == 1
+    assert "node1" in d.notified[0][1]
+
+    await d.sweep({"node1", "node2"})
+
+    assert len(d.notified) == 2, "a host joining an already-bad fleet must notify"
+    subject, body = d.notified[1]
+    assert "failed" in subject.lower()  # severity keyword -> not default priority
+    assert "node2" in body
+    assert "service check failed" in body  # names WHICH check failed
+    assert "Still failing: node1" in body
+
+
+async def test_probe_does_not_renotify_for_an_unchanged_bad_host(client, monkeypatch):
+    d = _ProbeDriver(monkeypatch)
+
+    await d.sweep({"node1"})
+    await d.sweep({"node1"})
+    await d.sweep({"node1"})
+
+    assert len(d.notified) == 1, "an unchanged red host must not re-notify every sweep"
+
+
+async def test_probe_notifies_again_after_a_host_recovers_and_fails_again(client, monkeypatch):
+    d = _ProbeDriver(monkeypatch)
+
+    await d.sweep({"node1"})
+    await d.sweep(set())
+    await d.sweep({"node1"})
+
+    assert len(d.notified) == 2
+
+
+async def test_probe_recovery_is_a_quiet_db_only_event(client, monkeypatch):
+    d = _ProbeDriver(monkeypatch)
+
+    await d.sweep({"node1", "node2"})
+    notified_before = len(d.notified)
+    await d.sweep({"node2"})
+
+    assert len(d.notified) == notified_before, "recovery must not page"
+    recovery = [e for e in d.events if "recovered" in e[0]]
+    assert recovery, d.events
+    assert "node1" in recovery[-1][1]
+    assert "Still failing: node2" in recovery[-1][1]
+
+
+async def test_probe_notifies_on_the_first_sweep_of_an_already_broken_fleet(client, monkeypatch):
+    d = _ProbeDriver(monkeypatch)
+
+    await d.sweep({"node1", "node2"})
+
+    assert len(d.notified) == 1
+    body = d.notified[0][1]
+    assert "node1" in body and "node2" in body
+
+
+async def test_probe_stays_silent_while_the_whole_fleet_is_green(client, monkeypatch):
+    d = _ProbeDriver(monkeypatch)
+
+    await d.sweep(set())
+    await d.sweep(set())
+
+    assert d.notified == []

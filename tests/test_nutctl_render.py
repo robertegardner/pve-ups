@@ -44,10 +44,11 @@ def test_display_only_rejected():
 
 
 def test_nas_host_renders_only_nut_dw_plugin_files():
-    """nas-nut-client (terramaster's Unraid nut-dw plugin) is a GUI-managed
+    """nas-nut-client (a NAS running the nut-dw plugin) is a GUI-managed
     appliance, not a scriptable Debian nut-client -- render_host() must emit
-    only the two files the live plugin actually owns (task-10-report.md
-    gap #4), never the pve-node upssched/sudoers set."""
+    only the two files the live plugin actually owns (per the live NAS
+    capture in the private ops repo), never the pve-node upssched/sudoers
+    set."""
     files = render_host(TOPO, "nas1", {"monuser_pass": "m4ster"})
     assert set(files) == {"/etc/nut/upsmon.conf", "/etc/nut/nut.conf"}
 
@@ -99,9 +100,9 @@ def test_server_ups_conf_stanzas():
 
 
 def test_server_ups_conf_stanza_body_is_indented_8_spaces():
-    """Matches live wol's /etc/nut/ups.conf convention (see task-10-report.md
-    gap #2): every stanza body line -- not just the header -- is indented,
-    the header itself is not."""
+    """Matches the live NUT server's /etc/nut/ups.conf convention (captured
+    in the private ops repo): every stanza body line -- not just the header
+    -- is indented, the header itself is not."""
     files = render_server(TOPO, SECRETS_SRV)
     conf = files["/etc/nut/ups.conf"]
     alpha = conf.split("[alpha]\n", 1)[1].split("\n\n", 1)[0]
@@ -110,9 +111,8 @@ def test_server_ups_conf_stanza_body_is_indented_8_spaces():
 
 
 def test_server_ups_conf_desc_productid_product_rendered_between_vendorid_and_serial():
-    """alpha carries desc/productid/product -- matches 3 of 5 live wol
-    stanzas that have an active `product` line (task-10-report.md gap #2
-    follow-up)."""
+    """alpha carries desc/productid/product -- matches the 3 of 5 stanzas in
+    the live NUT server capture that have an active `product` line."""
     files = render_server(TOPO, SECRETS_SRV)
     conf = files["/etc/nut/ups.conf"]
     assert '        desc = "CyberPower CP1500PFCLCD"' in conf
@@ -152,10 +152,10 @@ def test_upsd_users_redaction():
 
 
 def test_upsd_users_matches_live_layout():
-    """Matches live wol's /etc/nut/upsd.users (task-10-report.md gap #3):
-    exactly two accounts (monuser master, nutnode slave), body lines
-    2-space indented. No fictitious synology-monuser account -- discstation's
-    DSM client authenticates as monuser directly (nut/nas/README.md)."""
+    """Matches the live NUT server's /etc/nut/upsd.users: exactly two
+    accounts (monuser master, nutnode slave), body lines 2-space indented.
+    No fictitious synology-monuser account -- the DSM-based NAS client
+    authenticates as monuser directly."""
     files = render_server(TOPO, None)
     users = files["/etc/nut/upsd.users"]
     assert users == (

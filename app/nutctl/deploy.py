@@ -15,6 +15,7 @@ has to get sudo-wrapping right once.
 from __future__ import annotations
 
 import difflib
+import os
 import shlex
 import time
 from dataclasses import dataclass
@@ -28,9 +29,27 @@ _KEEP_STASHES = 3
 #: Service nutctl expects the host's NUT client stack to be running as.
 _SERVICE = "nut-monitor"
 
+#: Default liveness check for a systemd host's NUT client. Overridable per host
+#: (``HostSpec.service_check``) for appliances that have no systemd at all.
+DEFAULT_SERVICE_CHECK = f"systemctl is-active {_SERVICE}"
+
+#: Where the pinned SSH host keys for the fleet live. Populated when the nutctl
+#: deploy key is authorized on each host (one ``ssh-keyscan`` per host).
+DEFAULT_KNOWN_HOSTS_PATH = "/etc/pve-usv/known_hosts_nutctl"
+
 
 class DeployRefused(Exception):
     """Raised when a deploy is refused outright (e.g. the fleet is on battery)."""
+
+
+class KnownHostsUnavailable(RuntimeError):
+    """Raised when the pinned SSH host-key file is missing.
+
+    Deliberately fatal rather than a fallback to unverified host keys: this
+    channel writes `/etc/sudoers.d/*` and ships the fleet's NUT passwords, so
+    an un-pinned peer is a credential-harvest opportunity, not an
+    inconvenience.
+    """
 
 
 @dataclass
@@ -65,10 +84,35 @@ class AsyncsshTransport:
     Both are exposed as pure staticmethods (``build_command``/
     ``build_write_command``) precisely so the wrapping logic is unit-testable
     without a real SSH connection.
+
+    Host keys are PINNED to ``known_hosts_path``. If that file does not exist
+    the transport refuses to connect (:class:`KnownHostsUnavailable`) instead
+    of falling back to ``known_hosts=None`` -- an unverified channel that
+    writes sudoers drop-ins and NUT passwords would hand both to any peer that
+    can win an ARP race on the LAN.
     """
 
-    def __init__(self, key_path: str) -> None:
+    def __init__(
+        self, key_path: str, known_hosts_path: str = DEFAULT_KNOWN_HOSTS_PATH
+    ) -> None:
         self._key_path = key_path
+        self._known_hosts_path = known_hosts_path or DEFAULT_KNOWN_HOSTS_PATH
+
+    def resolve_known_hosts(self) -> str:
+        """The known_hosts file to pin against, or raise if it isn't there.
+
+        Split out from :meth:`run` so the refuse-vs-use decision is unit
+        testable without an SSH connection.
+        """
+        if not os.path.exists(self._known_hosts_path):
+            raise KnownHostsUnavailable(
+                f"refusing to connect: pinned SSH host-key file "
+                f"{self._known_hosts_path} does not exist. Populate it "
+                f"(ssh-keyscan each fleet host) or point "
+                f"nutctl_known_hosts_path at the right file; nutctl will not "
+                f"fall back to unverified host keys."
+            )
+        return self._known_hosts_path
 
     @staticmethod
     def build_command(cmd: str, sudo: bool) -> str:
@@ -105,8 +149,12 @@ class AsyncsshTransport:
             if stdin is not None
             else self.build_command(cmd, ssh.sudo)
         )
+        known_hosts = self.resolve_known_hosts()
         async with asyncssh.connect(
-            ssh.host, username=ssh.user, client_keys=[self._key_path], known_hosts=None
+            ssh.host,
+            username=ssh.user,
+            client_keys=[self._key_path],
+            known_hosts=known_hosts,
         ) as conn:
             result = await conn.run(remote_cmd, input=stdin, check=False)
             return (
@@ -228,14 +276,29 @@ async def _write_file(t: Transport, ssh: SshSpec, path: str, content: str) -> tu
     return True, f"{path}: written + placed"
 
 
-async def _verify(t: Transport, ssh: SshSpec, rendered: dict[str, str]) -> tuple[bool, str]:
-    rc, out, _err = await t.run(ssh, f"systemctl is-active {_SERVICE}")
-    active = rc == 0 and out.strip() == "active"
+async def _verify(
+    t: Transport,
+    ssh: SshSpec,
+    rendered: dict[str, str],
+    service_check: str | None = None,
+) -> tuple[bool, str]:
+    """Post-deploy check: the host's NUT client is alive AND every file we
+    wrote reads back byte-identical.
+
+    `service_check` is a full shell command whose rc 0 means "alive"; `None`
+    selects :data:`DEFAULT_SERVICE_CHECK`. Only rc is consulted -- an
+    appliance whose liveness probe is `pgrep -x upsmon` has no "active" string
+    to print, and `systemctl is-active` already exits nonzero for every state
+    that isn't active.
+    """
+    cmd = service_check or DEFAULT_SERVICE_CHECK
+    rc, _out, _err = await t.run(ssh, cmd)
+    active = rc == 0
 
     live = await fetch_live(t, ssh, list(rendered.keys()))
     mismatches = [path for path, content in rendered.items() if live.get(path) != content]
 
-    detail = f"{_SERVICE} {'active' if active else 'NOT active'}"
+    detail = f"`{cmd}` {'ok' if active else f'FAILED (rc={rc})'}"
     if mismatches:
         detail += f"; content mismatch: {', '.join(mismatches)}"
     return active and not mismatches, detail
@@ -248,6 +311,7 @@ async def deploy_host(
     *,
     reload_cmds: list[str],
     on_battery: bool,
+    service_check: str | None = None,
 ) -> DeployResult:
     """Push `rendered` files to `ssh.host`, stash-then-atomic-move each one, run
     `reload_cmds`, and verify.
@@ -258,6 +322,17 @@ async def deploy_host(
     failure on one file aborts the remaining files for this host (no partial
     fleet of half-applied configs) and forces `ok=False`; `reload_cmds` only run
     once every file placed cleanly.
+
+    `reload_cmds` is an ordered, INTERLOCKED sequence, not a best-effort list:
+    the first command that exits nonzero halts the rest and the untouched
+    commands are named in `detail`. That is what makes the NUT server's
+    per-UPS "restart this driver, then prove it answers `upsc`, then move to
+    the next" composition safe -- a driver that fails to come back must stop
+    the sweep, never let it march on and take the monitoring source down UPS
+    by UPS.
+
+    `service_check` overrides the post-deploy liveness command (see
+    :func:`_verify`); `None` uses the systemd default.
     """
     if on_battery:
         raise DeployRefused("refusing to deploy: fleet is on battery")
@@ -280,24 +355,33 @@ async def deploy_host(
         written[path] = content
 
     if ok:
-        for cmd in reload_cmds:
+        for i, cmd in enumerate(reload_cmds):
             rc, _out, err = await t.run(ssh, cmd)
             details.append(f"reload `{cmd}`: rc={rc}")
             if rc != 0:
                 ok = False
                 if err.strip():
                     details.append(f"  stderr: {err.strip()}")
+                skipped = reload_cmds[i + 1:]
+                if skipped:
+                    details.append(
+                        "HALTED after failed reload step; not run: "
+                        + ", ".join(f"`{s}`" for s in skipped)
+                    )
+                break
 
     # Only re-check files that actually got written -- a path that never made
     # it past _write_file was never touched, and shouldn't get an extra
     # network round trip (or a spurious "content mismatch") in the verify step.
-    verified, verify_detail = await _verify(t, ssh, written)
+    verified, verify_detail = await _verify(t, ssh, written, service_check)
     details.append(verify_detail)
 
     return DeployResult(ok=ok, verified=verified, detail="; ".join(details))
 
 
-async def revert_host(t: Transport, ssh: SshSpec, paths: list[str]) -> DeployResult:
+async def revert_host(
+    t: Transport, ssh: SshSpec, paths: list[str], service_check: str | None = None
+) -> DeployResult:
     """Restore the newest `<path>.pre-nutctl.*` stash for each of `paths`.
 
     A path with no stash at all fails the whole revert (`ok=False`) -- there is
@@ -324,7 +408,7 @@ async def revert_host(t: Transport, ssh: SshSpec, paths: list[str]) -> DeployRes
 
         details.append(f"{path}: reverted from {newest}")
 
-    verified, verify_detail = await _verify(t, ssh, {})
+    verified, verify_detail = await _verify(t, ssh, {}, service_check)
     details.append(verify_detail)
 
     return DeployResult(ok=ok, verified=verified, detail="; ".join(details))
