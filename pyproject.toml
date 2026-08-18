@@ -36,6 +36,7 @@ dependencies = [
     "passlib[argon2]>=1.7",  # UI password hashing
     "itsdangerous>=2.1",     # signed session cookies
     "python-multipart>=0.0.9",  # multipart form parsing for the update upload
+    "asyncssh>=2.14",        # nutctl deploy engine: key-based SSH push/verify to fleet hosts
 ]
 
 [project.optional-dependencies]
