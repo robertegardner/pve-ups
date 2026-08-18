@@ -762,6 +762,21 @@ class Engine:
             )
             return
 
+        # Observer mode (default for the nutctl fleet-control-plane fork): this
+        # appliance never holds the shutdown authority for a host that has its own
+        # upsmon armed from the topology file (see app/nutctl/bridge.py). Checked only
+        # on this non-dry-run path so an existing dry_run=True deployment keeps seeing
+        # the DRY-RUN wording unchanged; host_fired is already latched above, and is
+        # released the same way a dry-run latch is (on feed recovery in _evaluate).
+        if getattr(self.cfg, "observer_mode", False):
+            await self._emit(
+                f"OBSERVER: {host.name} tier conditions met",
+                f"Reason: {reason}. This appliance is an observer — "
+                f"{host.name}'s own upsmon is the shutdown authority.",
+                db.CRITICAL,
+            )
+            return
+
         self.host_states.setdefault(host.name, {})
         ok, msg = await proxmox.shutdown_node(
             host, timeout=self.cfg.thresholds.host_shutdown_timeout_s

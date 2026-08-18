@@ -414,6 +414,10 @@ async def test_eligible_hosts_shut_down_this_host_last(monkeypatch):
                     charge_below_percent=None, on_battery_low=False)
     cfg = AppConfig(
         dry_run=False,
+        # nutctl fork defaults to observer_mode=True (no real shutdown, ever); this test
+        # exercises the real Proxmox-call path, which only exists for a deployment
+        # without per-host upsmon, so it must opt out explicitly.
+        observer_mode=False,
         ups=[SnmpConfig(id="a", host="10.0.0.1")],
         hosts=[
             HostConfig(name="self", api_url="x", this_host=True, ups_ids=["a"]),

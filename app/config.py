@@ -277,6 +277,15 @@ class AppConfig(BaseModel):
     # Master safety switch: when True the engine only logs, never shuts anything down.
     dry_run: bool = True
 
+    # nutctl fleet-control-plane bridge (see app/nutctl/): this appliance can derive its
+    # dashboard/feed map straight from a NUT topology file instead of the web-UI host
+    # editor. Defaults to observer mode — per-host upsmon (armed from the SAME topology
+    # via nutctl render) is the real shutdown authority, this appliance only ever watches
+    # and reports. Flip to False only for a deployment that has no per-host upsmon and
+    # wants this appliance itself to fire the Proxmox shutdown API.
+    observer_mode: bool = True
+    nutctl_topology_path: str = "/etc/pve-usv/nut-topology.yaml"
+
     ups: list[UpsSource] = Field(default_factory=list)
     hosts: list[HostConfig] = Field(default_factory=list)
     thresholds: Thresholds = Thresholds()
