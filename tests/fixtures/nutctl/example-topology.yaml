@@ -1,0 +1,37 @@
+nut_server: { host: 192.0.2.10, ssh: { host: 192.0.2.10, user: root } }
+quorum: { total_votes: 5, qdevice_votes: 1 }
+ups:
+  alpha: { runtime_low_s: 420, nominal_w: 1200, driver: { port: auto, vendorid: "0764", serial: "AAA1", flags: [onlinedischarge] } }
+  beta:  { runtime_low_s: 600, nominal_w: 1000, driver: { port: auto, vendorid: "0764", serial: "BBB2", flags: [onlinedischarge] } }
+hosts:
+  node1:
+    type: pve-node
+    votes: 1
+    feeds: [alpha]
+    ssh: { host: 192.0.2.21, user: root }
+    tiers:
+      - { tier: T0, trigger: onbatt, after_s: 90,  action: qm-shutdown, vmid: 101, timeout_s: 120 }
+      - { tier: T1, trigger: onbatt, after_s: 240, action: node-shutdown }
+    on_online: [cancel-timers, qm-start-if-we-stopped]
+  node2:
+    type: pve-node
+    votes: 1
+    feeds: [alpha, beta]
+    policy: all
+    ssh: { host: 192.0.2.22, user: deploy, sudo: true }
+    tiers: [ { tier: T2, trigger: lowbatt, action: node-shutdown } ]
+  node3:
+    type: pve-node
+    votes: 1
+    feeds: [beta]
+    ssh: { host: 192.0.2.23, user: root }
+    tiers: [ { tier: T2, trigger: lowbatt, action: node-shutdown } ]
+  nas1:
+    type: nas-nut-client
+    feeds: [alpha]
+    ssh: { host: 192.0.2.31, user: root }
+    tiers: [ { tier: T2, trigger: lowbatt, action: shutdown } ]
+  nas2:
+    type: display-only
+    feeds: [beta]
+    note: vendor GUI client
