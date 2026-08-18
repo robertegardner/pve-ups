@@ -269,6 +269,13 @@ class Notifications(BaseModel):
     # unknown keys, so it is dropped silently on load and gone after the next save.
     webhook: WebhookConfig = WebhookConfig()
 
+    # ntfy.sh (or a self-hosted instance): POSTs the plain-text body to
+    # {ntfy_url}/{ntfy_topic}. Both must be set for the send to fire. ntfy_token is an
+    # optional bearer token for auth-protected topics; empty = no Authorization header.
+    ntfy_url: str = ""
+    ntfy_topic: str = ""
+    ntfy_token: str = ""
+
 
 class AppConfig(BaseModel):
     # Marks whether the setup wizard has been completed at least once.
