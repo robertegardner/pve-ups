@@ -295,6 +295,17 @@ class AppConfig(BaseModel):
     observer_mode: bool = True
     nutctl_topology_path: str = "/etc/pve-usv/nut-topology.yaml"
 
+    # SSH key used by the nutctl deploy/preview/probe routes (app/nutctl/routes.py)
+    # to reach the fleet's hosts + the NUT server; never written by the web UI form.
+    nutctl_key_path: str = "/etc/pve-usv/id_ed25519_nutctl"
+    # YAML {nutnode_pass, monuser_pass, synology_pass}; missing file means "no
+    # secrets configured" -- deploy/preview degrade safely (see routes.py), the
+    # observer probe skips the config_match signal (see main.py).
+    nutctl_secrets_path: str = "/etc/pve-usv/nutctl-secrets.yaml"
+    # Where a successful deploy mirrors its REDACTED render tree for review/diff
+    # history (<repo_dir>/nut/rendered/<host>/...). Empty (default) = skip entirely.
+    nutctl_repo_dir: str = ""
+
     ups: list[UpsSource] = Field(default_factory=list)
     hosts: list[HostConfig] = Field(default_factory=list)
     thresholds: Thresholds = Thresholds()

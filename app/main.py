@@ -5,6 +5,7 @@ Copyright 2026 Florian Finder
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -26,7 +27,7 @@ from itsdangerous import BadSignature, URLSafeTimedSerializer
 from passlib.context import CryptContext
 from pydantic import BaseModel
 
-from . import __version__, db
+from . import __version__, config, db, notify
 from .config import (
     UPS_SOURCE_MODELS,
     AppConfig,
@@ -38,8 +39,13 @@ from .config import (
     load_config,
     save_config,
 )
-from .engine import Engine
+from .engine import Engine, selftest_slot
 from . import proxmox, sources
+from .nutctl import routes as nutctl_routes
+from .nutctl.deploy import AsyncsshTransport as NutctlAsyncsshTransport
+from .nutctl.probe import probe_fleet as nutctl_probe_fleet
+from .nutctl.topology import TopologyError as NutctlTopologyError
+from .nutctl.topology import load_topology as nutctl_load_topology
 
 log = logging.getLogger("pve-usv")
 
@@ -199,6 +205,89 @@ def _ingest_agent_result() -> Optional[dict]:
     return result
 
 
+# --- nutctl: observer-mode SSH fleet probe -----------------------------------
+# app.engine.Engine._maybe_selftest returns immediately while cfg.observer_mode is
+# True (the nutctl fork's default) -- the Proxmox credential test has nothing real
+# to check against a synthesized host's placeholder API URL. This task runs in its
+# place, on the SAME selftest_slot cadence, and probes the actual NUT fleet over
+# SSH instead (ssh reachability + upsmon health + config drift, app.nutctl.probe).
+_NUTCTL_PROBE_TICK_S = 60
+
+_nutctl_last_probe_slot: Optional[datetime] = None
+_nutctl_last_all_green: Optional[bool] = None
+
+
+async def _maybe_run_nutctl_probe() -> None:
+    """Run the SSH fleet probe once per self-test slot; store results for
+    GET /api/nutctl/fleet; emit an event (+ notify) on any regression to
+    not-all-green, a quiet db-only event on recovery.
+    """
+    global _nutctl_last_probe_slot, _nutctl_last_all_green
+    assert engine is not None
+    cfg = engine.cfg
+    if not cfg.observer_mode:
+        return  # non-observer deployments have no topology-driven fleet to probe
+
+    topo_path = Path(cfg.nutctl_topology_path)
+    if not topo_path.exists():
+        return  # nothing written yet -- nothing to probe
+
+    slot = selftest_slot(datetime.now(), cfg.selftest_hour, cfg.selftest_interval_min)
+    if _nutctl_last_probe_slot is not None and slot <= _nutctl_last_probe_slot:
+        return
+    _nutctl_last_probe_slot = slot
+
+    try:
+        topo = nutctl_load_topology(topo_path)
+    except NutctlTopologyError as exc:
+        log.warning("nutctl: topology invalid, skipping fleet probe: %s", exc)
+        return
+
+    secrets = nutctl_routes.load_secrets(cfg.nutctl_secrets_path)
+    transport = NutctlAsyncsshTransport(cfg.nutctl_key_path)
+    try:
+        results = await nutctl_probe_fleet(transport, topo, secrets)
+    except Exception as exc:  # noqa: BLE001 - a probe crash must not kill the poll loop
+        log.warning("nutctl: fleet probe failed: %s", exc)
+        return
+
+    nutctl_routes.set_last_probe(results, datetime.now(timezone.utc).isoformat())
+
+    # Secrets missing means every secret-bearing line reads as "drifted" against
+    # the redacted render (probe_fleet has no Optional-secrets mode) -- that is
+    # not a real fleet regression, so config_match is excluded from the verdict
+    # in that case. ssh_ok/upsmon_active alone still catch a genuinely dead host.
+    secrets_loaded = bool(secrets)
+
+    def _green(r) -> bool:
+        ok = bool(r.ssh_ok) and bool(r.upsmon_active)
+        if secrets_loaded:
+            ok = ok and r.config_match is not False
+        return ok
+
+    bad = sorted(name for name, r in results.items() if not _green(r))
+    all_green = not bad
+
+    if bad and _nutctl_last_all_green is not False:
+        subject = "nutctl fleet probe: regression"
+        body = f"Not all-green: {', '.join(bad)}"
+        db.log_event(subject, body, db.WARNING)
+        await notify.notify(engine.cfg.notifications, f"[PVE-UPS] {subject}", body, {})
+    elif all_green and _nutctl_last_all_green is False:
+        db.log_event("nutctl fleet probe: recovered", "Fleet is all-green again.", db.INFO)
+
+    _nutctl_last_all_green = all_green
+
+
+async def _nutctl_probe_loop() -> None:
+    while True:
+        try:
+            await _maybe_run_nutctl_probe()
+        except Exception:  # noqa: BLE001 - the loop itself must never die
+            log.exception("nutctl fleet probe tick failed")
+        await asyncio.sleep(_NUTCTL_PROBE_TICK_S)
+
+
 # --- lifespan ---------------------------------------------------------------
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -207,10 +296,16 @@ async def lifespan(app: FastAPI):
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
-    db.init_db()
-    cfg = load_config()
+    # Read the path off the module attribute (not the function's own default arg,
+    # which is bound once at import time) so tests can monkeypatch db.DB_PATH /
+    # config.CONFIG_PATH and have it actually take effect here.
+    db.init_db(db.DB_PATH)
+    cfg = load_config(config.CONFIG_PATH)
     engine = Engine(cfg)
     engine.start()
+    nutctl_routes.set_engine(engine)
+    nutctl_routes.sync_topology_into_engine(engine)
+    nutctl_task = asyncio.create_task(_nutctl_probe_loop(), name="pve-usv-nutctl-probe")
     log.info("PVE-UPS %s started", __version__)
     # If we just restarted because of an applied update, surface its outcome now.
     try:
@@ -220,11 +315,21 @@ async def lifespan(app: FastAPI):
     try:
         yield
     finally:
+        nutctl_task.cancel()
+        try:
+            await nutctl_task
+        except asyncio.CancelledError:
+            pass
         if engine:
             await engine.stop()
 
 
 app = FastAPI(title="PVE-UPS", version=__version__, lifespan=lifespan)
+
+# nutctl fleet control-plane routes: same require_auth as every other authenticated
+# endpoint below, applied once here rather than per-route (see app/nutctl/routes.py's
+# module docstring for the "no exceptions" rationale).
+app.include_router(nutctl_routes.router, dependencies=[Depends(require_auth)])
 
 
 # --- public (read-only) endpoints ------------------------------------------

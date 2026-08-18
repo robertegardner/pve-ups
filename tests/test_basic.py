@@ -1632,9 +1632,16 @@ def test_selftest_slot_tolerates_broken_values():
 
 
 def _selftest_engine(monkeypatch, now, **cfg_kwargs):
-    """Engine with one host, a patched local clock and a counting _run_selftest."""
+    """Engine with one host, a patched local clock and a counting _run_selftest.
+
+    Opts out of observer_mode (the nutctl fork's default): these tests exercise
+    the credential self-test's scheduling machinery directly, which _maybe_selftest
+    now skips entirely while observer_mode is True (see test_selftest_observer_mode_
+    skips_the_credential_test below for that guard itself).
+    """
     from app import engine as engine_mod
 
+    cfg_kwargs.setdefault("observer_mode", False)
     cfg = AppConfig(
         hosts=[HostConfig(name="pve01", api_url="https://10.0.0.10:8006")], **cfg_kwargs
     )
@@ -1730,6 +1737,23 @@ async def test_selftest_never_runs_when_disabled_or_without_hosts(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_selftest_observer_mode_skips_the_credential_test(monkeypatch):
+    """observer_mode=True (the nutctl fork's default) must never run the Proxmox
+    credential self-test: synthesized nutctl hosts carry no real API of their own
+    (PLACEHOLDER_API_URL), so testing them would just spam CRITICAL failures.
+    main.py's nutctl SSH fleet probe is the real health signal in that mode."""
+    eng, clock, runs = _selftest_engine(
+        monkeypatch, datetime(2026, 7, 25, 10, 0),
+        selftest_hour=9, selftest_interval_min=15, observer_mode=True,
+    )
+
+    await eng._maybe_selftest()
+
+    assert runs == []
+    assert eng.last_selftest_slot is None  # never even latches a slot
+
+
+@pytest.mark.asyncio
 async def test_selftest_slot_survives_a_restart(monkeypatch):
     """Without persistence a 15-minute cadence would re-test on every service restart."""
     import json as _json
@@ -1765,7 +1789,12 @@ async def test_selftest_outcome_survives_a_restart(monkeypatch):
     from app.proxmox import TestResult
 
     monkeypatch.setattr(engine_mod, "_local_now", lambda: datetime(2026, 7, 25, 10, 0))
-    cfg = AppConfig(hosts=[HostConfig(name="pve01", api_url="https://10.0.0.10:8006")])
+    # observer_mode=False: _maybe_selftest now skips entirely in observer mode
+    # (the nutctl fork's default) -- this test exercises the credential check itself.
+    cfg = AppConfig(
+        hosts=[HostConfig(name="pve01", api_url="https://10.0.0.10:8006")],
+        observer_mode=False,
+    )
     eng = Engine(cfg)
 
     async def fake_test(host, *a, **k):

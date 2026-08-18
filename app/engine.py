@@ -131,6 +131,15 @@ class Engine:
         self.host_fired: dict[str, bool] = {}
         self.host_states: dict[str, dict] = {}
 
+        # nutctl bridge seam (see set_nutctl_hosts): a synthesized host list derived
+        # from the topology file, used by the evaluation/snapshot machinery INSTEAD
+        # of ``self.cfg.hosts`` when set. Deliberately never written into ``self.cfg``
+        # itself -- /api/config, /api/config/export and save_config() all read
+        # ``self.cfg`` directly, and a synthesized host list must never round-trip
+        # into the persisted, web-UI-managed config. None (the default) falls back
+        # to the plain ``cfg.hosts`` behaviour, unchanged from upstream.
+        self.nutctl_hosts: Optional[list[HostConfig]] = None
+
         # Daily housekeeping: keep the event log bounded.
         self.last_prune_date = None  # type: ignore[var-annotated]
 
@@ -283,6 +292,23 @@ class Engine:
         """
         self.cfg = cfg
         self._sync_runtimes()
+
+    def set_nutctl_hosts(self, hosts: Optional[list[HostConfig]]) -> None:
+        """Engine-side host list synthesized from the nutctl topology file (see
+        app.nutctl.routes.sync_topology_into_engine). See the seam note on
+        ``self.nutctl_hosts`` in __init__ for why this is not ``self.cfg.hosts``.
+        """
+        self.nutctl_hosts = hosts
+
+    def _ordered_hosts(self) -> list[HostConfig]:
+        """Enabled hosts in shutdown order (this appliance's own host always last).
+
+        Uses the nutctl-synthesized list when ``set_nutctl_hosts`` has been called,
+        otherwise the plain web-UI-managed ``cfg.hosts`` -- see the seam note above.
+        """
+        hosts = self.nutctl_hosts if self.nutctl_hosts is not None else self.cfg.hosts
+        active = [h for h in hosts if h.enabled]
+        return sorted(active, key=lambda h: (h.this_host, h.order, h.name))
 
     def reset(self) -> None:
         """Clear shutdown latches and alarms — used after a dry-run test."""
@@ -483,7 +509,7 @@ class Engine:
         current batch automatically.
         """
         eligible: list[tuple[HostConfig, str]] = []
-        for host in self.cfg.ordered_hosts():
+        for host in self._ordered_hosts():
             reason = self._host_trigger_reason(host)
             committed = self.host_states.get(host.name, {}).get("shutdown_state") in (
                 "sent",
@@ -667,7 +693,7 @@ class Engine:
             policy = "AND" if h.ups_policy == "all" else "OR"
             return f"{h.name} [{labels}, {policy}]"
 
-        hosts = ", ".join(_desc(h) for h in self.cfg.ordered_hosts()) or "(no hosts)"
+        hosts = ", ".join(_desc(h) for h in self._ordered_hosts()) or "(no hosts)"
         msg = f"Test (dry-run): order {hosts}. NOTHING was shut down."
         await self._emit("Test shutdown executed", msg, db.WARNING)
         return msg
@@ -685,8 +711,19 @@ class Engine:
 
     # -- scheduled self-test of the Proxmox API credentials -----------------
     async def _maybe_selftest(self) -> None:
-        """Run the credential self-test once per scheduled slot (see selftest_slot())."""
+        """Run the credential self-test once per scheduled slot (see selftest_slot()).
+
+        Observer mode (the nutctl fork's default) never calls this: its ``hosts``
+        are synthesized placeholders with no real Proxmox API of their own (see
+        ``app.nutctl.bridge.PLACEHOLDER_API_URL``), so testing their credentials
+        would just spam CRITICAL self-test failures against an inert URL on every
+        scheduled slot. main.py's lifespan runs the nutctl SSH fleet probe on this
+        same cadence instead (see its "nutctl: observer-mode SSH fleet probe"
+        section) -- that is the real health signal for an observer deployment.
+        """
         cfg = self.cfg
+        if getattr(cfg, "observer_mode", False):
+            return
         if not cfg.selftest_enabled or not cfg.hosts:
             return
         # Never spend the poll budget on credential checks during an outage: every host
@@ -712,7 +749,7 @@ class Engine:
     async def _run_selftest(self) -> None:
         """Verify token + Sys.PowerMgmt per host. Success is logged quietly (no notify),
         failure is emitted (notify) so a broken credential is noticed."""
-        hosts = self.cfg.ordered_hosts()
+        hosts = self._ordered_hosts()
         # Concurrently: sequentially, five unreachable hosts would stall the poll loop for
         # 5 x 10 s. gather preserves the order, so the events stay in host order.
         results = await asyncio.gather(*(proxmox.test_connection(h) for h in hosts))
@@ -872,7 +909,7 @@ class Engine:
                 ups_list.append(self._ups_snapshot(u, rt))
 
         hosts = []
-        for h in self.cfg.ordered_hosts():
+        for h in self._ordered_hosts():
             st = self.host_states.get(h.name, {})
             feed_ids = self.cfg.feed_ids_for(h)
             feeds = []
