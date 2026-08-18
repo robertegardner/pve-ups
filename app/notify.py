@@ -59,8 +59,9 @@ async def _notify_ntfy(notifications: Notifications, subject: str, body: str) ->
             "User-Agent": _NTFY_USER_AGENT,
             "Priority": priority,
         }
-        if notifications.ntfy_token:
-            headers["Authorization"] = f"Bearer {notifications.ntfy_token}"
+        token = notifications.ntfy_token.get_secret_value()
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
         url = f"{notifications.ntfy_url.rstrip('/')}/{notifications.ntfy_topic}"
         async with httpx.AsyncClient(timeout=10) as client:
             await client.post(url, content=body.encode("utf-8"), headers=headers)

@@ -373,6 +373,14 @@ def _merge_config(incoming: dict, existing: AppConfig) -> AppConfig:
         old_secret = old.token_secret.get_secret_value() if old else ""
         host["token_secret"] = _reconcile_secret(host.get("token_secret"), old_secret)
 
+    # ntfy bearer token: a masked value round-tripping from the UI must not clobber it.
+    notifications = data.get("notifications")
+    if isinstance(notifications, dict):
+        old_ntfy_token = existing.notifications.ntfy_token.get_secret_value()
+        notifications["ntfy_token"] = _reconcile_secret(
+            notifications.get("ntfy_token"), old_ntfy_token
+        )
+
     # Never overwrite auth/session material from the config form.
     data["ui_password_hash"] = existing.ui_password_hash
     data["session_secret"] = existing.session_secret

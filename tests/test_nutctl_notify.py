@@ -15,7 +15,7 @@ import httpx
 import pytest
 
 from app import notify
-from app.config import Notifications
+from app.config import AppConfig, Notifications
 
 
 class _Recorder:
@@ -223,3 +223,110 @@ async def test_ntfy_failure_is_logged_not_raised(monkeypatch, caplog):
         await notify.notify(cfg, "subject", "body", {})  # must not raise
 
     assert any("ntfy" in rec.message.lower() for rec in caplog.records)
+
+
+# --- ntfy_token secret handling (SecretStr masking + merge reconciliation) --------
+
+
+def test_ntfy_token_is_secretstr_and_not_leaked_by_str_or_repr():
+    cfg = _cfg(
+        ntfy_url="https://ntfy.example.test", ntfy_topic="pve-ups", ntfy_token="tok-secret"
+    )
+
+    assert "tok-secret" not in str(cfg.ntfy_token)
+    assert "tok-secret" not in repr(cfg.ntfy_token)
+    assert cfg.ntfy_token.get_secret_value() == "tok-secret"
+
+
+def test_sanitized_config_masks_ntfy_token():
+    import json
+
+    from app import main
+
+    cfg = AppConfig(
+        notifications=_cfg(
+            ntfy_url="https://ntfy.example.test", ntfy_topic="pve-ups", ntfy_token="tok-secret"
+        )
+    )
+
+    data = main._sanitized_config(cfg)
+
+    assert data["notifications"]["ntfy_token"] == main.SECRET_PLACEHOLDER
+    assert "tok-secret" not in json.dumps(data)
+
+
+def test_merge_config_reconciles_masked_ntfy_token_keeps_old_value():
+    """A masked value round-tripping from the UI (GET then re-POST unchanged) must not
+    clobber the stored bearer token."""
+    from app import main
+
+    existing = AppConfig(
+        notifications=_cfg(
+            ntfy_url="https://ntfy.example.test", ntfy_topic="pve-ups", ntfy_token="keepme"
+        )
+    )
+    incoming = {
+        "ups": [],
+        "hosts": [],
+        "notifications": {
+            "webhook": {"enabled": False, "url": ""},
+            "ntfy_url": "https://ntfy.example.test",
+            "ntfy_topic": "pve-ups",
+            "ntfy_token": main.SECRET_PLACEHOLDER,
+        },
+    }
+
+    merged = main._merge_config(incoming, existing)
+
+    assert merged.notifications.ntfy_token.get_secret_value() == "keepme"
+
+
+def test_merge_config_accepts_a_new_ntfy_token_when_one_is_submitted():
+    from app import main
+
+    existing = AppConfig(
+        notifications=_cfg(
+            ntfy_url="https://ntfy.example.test", ntfy_topic="pve-ups", ntfy_token="old"
+        )
+    )
+    incoming = {
+        "ups": [],
+        "hosts": [],
+        "notifications": {
+            "webhook": {"enabled": False, "url": ""},
+            "ntfy_url": "https://ntfy.example.test",
+            "ntfy_topic": "pve-ups",
+            "ntfy_token": "brand-new",
+        },
+    }
+
+    merged = main._merge_config(incoming, existing)
+
+    assert merged.notifications.ntfy_token.get_secret_value() == "brand-new"
+
+
+def test_merge_config_treats_empty_ntfy_token_same_as_placeholder():
+    """_reconcile_secret treats "" the same as the mask placeholder for every other
+    secret field (an empty form field is never distinguishable from "unchanged"); the
+    ntfy token follows the same rule."""
+    from app import main
+
+    existing = AppConfig(
+        notifications=_cfg(
+            ntfy_url="https://ntfy.example.test", ntfy_topic="pve-ups", ntfy_token="old"
+        )
+    )
+    incoming = {
+        "ups": [],
+        "hosts": [],
+        "notifications": {
+            "webhook": {"enabled": False, "url": ""},
+            "ntfy_url": "https://ntfy.example.test",
+            "ntfy_topic": "pve-ups",
+            "ntfy_token": "",
+        },
+    }
+
+    merged = main._merge_config(incoming, existing)
+
+    assert merged.notifications.ntfy_token.get_secret_value() == "old"

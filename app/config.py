@@ -272,9 +272,11 @@ class Notifications(BaseModel):
     # ntfy.sh (or a self-hosted instance): POSTs the plain-text body to
     # {ntfy_url}/{ntfy_topic}. Both must be set for the send to fire. ntfy_token is an
     # optional bearer token for auth-protected topics; empty = no Authorization header.
+    # SecretStr like every other credential in this file, so _sanitized_config() masks it
+    # in /api/config responses instead of leaking it in plaintext.
     ntfy_url: str = ""
     ntfy_topic: str = ""
-    ntfy_token: str = ""
+    ntfy_token: SecretStr = SecretStr("")
 
 
 class AppConfig(BaseModel):
