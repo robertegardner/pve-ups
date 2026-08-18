@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<!-- Copyright 2026 Florian Finder -->
+<!-- NUT fleet control plane: topology editor, diff+deploy, fleet status.
+     Static page (public, like index.html) that talks only to /api/nutctl/*
+     (auth-gated) using the same session cookie index.html sets on login. -->
+<html lang="en" data-theme="auto">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>NUT Fleet - PVE-UPS</title>
+  <link rel="stylesheet" href="/style.css" />
+  <style>
+    /* nutctl-page-only additions: kept here rather than in style.css (out of scope
+       for this task) so the shared stylesheet stays untouched. */
+    #topoYaml {
+      width: 100%; min-height: 420px; resize: vertical;
+      font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+      font-size: 12.5px; line-height: 1.5; tab-size: 2;
+    }
+    .diff-pre {
+      background: var(--bg); border: 1px solid var(--border); border-radius: var(--r-sm);
+      padding: 10px 12px; margin: 8px 0 0; overflow: auto; max-height: 360px;
+      font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+      font-size: 12px; line-height: 1.5; white-space: pre;
+    }
+    .host-card-list .card:last-child { margin-bottom: 0; }
+    .host-card-list details { border-top: 1px solid var(--border); padding-top: 10px; margin-top: 10px; }
+    .host-card-list details:first-of-type { border-top: none; margin-top: 4px; padding-top: 0; }
+    .callout ul { margin: 6px 0 0; padding-left: 18px; }
+    .callout li { margin: 2px 0; }
+  </style>
+</head>
+<body>
+  <!-- Inline icon sprite (offline, no external assets) — subset of index.html's set. -->
+  <svg width="0" height="0" hidden aria-hidden="true">
+    <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 2 4 5v6c0 5 3.4 8.5 8 11 4.6-2.5 8-6 8-11V5l-8-3z"/></symbol>
+    <symbol id="i-server" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="7" rx="2"/><rect x="3" y="13" width="18" height="7" rx="2"/><line x1="7" y1="7.5" x2="7.01" y2="7.5"/><line x1="7" y1="16.5" x2="7.01" y2="16.5"/></symbol>
+    <symbol id="i-plug" viewBox="0 0 24 24"><path d="M12 22v-5"/><path d="M9 8V2"/><path d="M15 8V2"/><path d="M18 8v5a4 4 0 0 1-4 4h-4a4 4 0 0 1-4-4V8z"/></symbol>
+    <symbol id="i-alert" viewBox="0 0 24 24"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></symbol>
+    <symbol id="i-save" viewBox="0 0 24 24"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></symbol>
+    <symbol id="i-reset" viewBox="0 0 24 24"><polyline points="1 4 1 10 7 10"/><path d="M3.5 15a9 9 0 1 0 2.1-9.4L1 10"/></symbol>
+    <symbol id="i-dashboard" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="9"/><rect x="14" y="3" width="7" height="5"/><rect x="14" y="12" width="7" height="9"/><rect x="3" y="16" width="7" height="5"/></symbol>
+  </svg>
+
+  <header class="topbar">
+    <span class="brand">
+      <svg class="mark icon-lg"><use href="#i-shield"></use></svg>
+      PVE-UPS <span class="ver muted">NUT Fleet</span>
+    </span>
+
+    <nav class="nav-seg" id="mainNav">
+      <button data-view="topology" class="tab active"><svg class="icon"><use href="#i-save"></use></svg> Topology</button>
+      <button data-view="diff" class="tab"><svg class="icon"><use href="#i-alert"></use></svg> Diff &amp; Deploy</button>
+      <button data-view="fleet" class="tab"><svg class="icon"><use href="#i-server"></use></svg> Fleet</button>
+    </nav>
+
+    <span class="spacer"></span>
+
+    <a href="/index.html" class="btn-ghost btn-sm" title="Back to the PVE-UPS dashboard">
+      <svg class="icon"><use href="#i-dashboard"></use></svg> Dashboard
+    </a>
+  </header>
+
+  <main>
+    <!-- Shown when /api/session says we are not authenticated (or any API call 401s). -->
+    <section id="authGate" class="card center" hidden>
+      <span class="brand"><svg class="mark icon-lg"><use href="#i-shield"></use></svg> PVE-UPS</span>
+      <h2>Session expired</h2>
+      <p class="muted">Log in on the main page, then come back to NUT Fleet.</p>
+      <a class="btn btn-primary" href="/index.html">Go to login</a>
+    </section>
+
+    <div id="app" hidden>
+      <!-- App-wide banner: on-battery / missing-secrets deploy lock, shown on every tab. -->
+      <div id="lockBanner" class="banner warn" hidden></div>
+
+      <!-- TOPOLOGY -->
+      <section id="tab-topology">
+        <div class="card">
+          <div class="card-h">
+            <h3><svg class="icon"><use href="#i-save"></use></svg> Topology YAML</h3>
+            <span class="actions muted" id="topoMsg"></span>
+          </div>
+          <p class="help">This is the fleet's source of truth: UPS units, hosts, feeds, shutdown
+            tiers and quorum. Saving validates the document server-side before it is written —
+            an invalid document is rejected and the file on disk is left untouched.</p>
+          <textarea id="topoYaml" spellcheck="false" placeholder="Loading…"></textarea>
+          <div class="row" style="margin-top:12px;align-items:center">
+            <button id="topoSaveBtn" class="btn-primary"><svg class="icon"><use href="#i-save"></use></svg> Validate &amp; Save</button>
+            <button id="topoReloadBtn" class="btn-ghost"><svg class="icon"><use href="#i-reset"></use></svg> Reload from disk</button>
+          </div>
+          <div id="topoErrors" class="callout danger" hidden></div>
+        </div>
+
+        <div class="card">
+          <div class="card-h">
+            <h3>Hosts</h3>
+            <span class="actions"><button id="topoSummaryBtn" class="btn-ghost btn-sm">Load from preview</button></span>
+          </div>
+          <p class="help">Sourced from a live <code>GET /api/nutctl/preview</code> (which
+            connects to every host over SSH), so it is loaded on demand rather than
+            automatically — click above to fetch it. Per-host feeds/policy/tiers detail lives
+            in the YAML editor above.</p>
+          <div class="table-wrap"><table class="mini">
+            <thead><tr><th>Host</th><th>Drift vs. rendered config</th></tr></thead>
+            <tbody id="topoSummaryBody"><tr><td colspan="2" class="empty">Not loaded yet.</td></tr></tbody>
+          </table></div>
+        </div>
+      </section>
+
+      <!-- DIFF & DEPLOY -->
+      <section id="tab-diff" hidden>
+        <div class="card">
+          <div class="card-h">
+            <h3><svg class="icon"><use href="#i-alert"></use></svg> Diff &amp; Deploy</h3>
+            <span class="actions">
+              <button id="refreshPreviewBtn" class="btn-ghost btn-sm"><svg class="icon"><use href="#i-reset"></use></svg> Refresh</button>
+              <button id="deployAllBtn" class="btn-primary btn-sm">Deploy all</button>
+            </span>
+          </div>
+          <p class="help" id="ddMsg">Comparing the rendered topology against each host's live
+            config files over SSH…</p>
+        </div>
+        <div id="hostCards" class="host-card-list"></div>
+      </section>
+
+      <!-- FLEET -->
+      <section id="tab-fleet" hidden>
+        <div class="card">
+          <div class="card-h">
+            <h3><svg class="icon"><use href="#i-server"></use></svg> Fleet probe</h3>
+            <span class="actions muted" id="fleetAt">–</span>
+          </div>
+          <p class="help">Background SSH sweep (runs independently of this page) checking each
+            host's reachability, whether <code>upsmon</code> is active, and whether its live
+            config matches what the topology renders. Refreshes automatically every 30s while
+            this tab is open.</p>
+          <div class="table-wrap"><table>
+            <thead><tr><th>Host</th><th>SSH</th><th>upsmon</th><th>Config match</th><th>Detail</th></tr></thead>
+            <tbody id="fleetBody"><tr><td colspan="5" class="empty">Loading…</td></tr></tbody>
+          </table></div>
+        </div>
+      </section>
+    </div>
+  </main>
+
+  <footer>© 2026 Florian Finder · PVE-UPS ·
+    <a href="https://github.com/ffind-dev/pve-ups" target="_blank" rel="noopener">GitHub</a></footer>
+
+  <script src="/nutctl.js"></script>
+</body>
+</html>
