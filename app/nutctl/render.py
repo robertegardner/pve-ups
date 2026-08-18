@@ -7,7 +7,7 @@ hosts, so whitespace and line order are load-bearing, not cosmetic.
 """
 from __future__ import annotations
 
-from app.nutctl.topology import HostSpec, Topology
+from app.nutctl.topology import HostSpec, Topology, UpsSpec
 
 #: Timer name for an "onbatt" tier, keyed by its shutdown action. Anything
 #: other than qm-shutdown (node-shutdown, shutdown) sheds the whole host, so
@@ -51,6 +51,10 @@ esac
 
 def _resolve_secret(secrets: dict[str, str] | None) -> str:
     return secrets["nutnode_pass"] if secrets else "@SECRET:nutnode_pass@"
+
+
+def _resolve(secrets: dict[str, str] | None, key: str) -> str:
+    return secrets[key] if secrets else f"@SECRET:{key}@"
 
 
 def _render_upsmon_conf(host: HostSpec, nut_host: str, sec: str) -> str:
@@ -101,6 +105,56 @@ def _render_upssched_env(host: HostSpec) -> str:
             vmid = str(tier.vmid)
             break
     return f'TIER0_VMID="{vmid}"\n'
+
+
+def _render_ups_stanza(name: str, ups: UpsSpec) -> str:
+    d = ups.driver
+    lines = [f"[{name}]", "driver = usbhid-ups", f"port = {d.port}"]
+    if d.vendorid is not None:
+        lines.append(f'vendorid = "{d.vendorid}"')
+    if d.serial is not None:
+        lines.append(f'serial = "{d.serial}"')
+    lines.extend(d.flags)
+    if ups.runtime_low_s is not None:
+        lines.append(f"override.battery.runtime.low = {ups.runtime_low_s}")
+    return "\n".join(lines) + "\n"
+
+
+def _render_ups_conf(topo: Topology) -> str:
+    return "\n".join(
+        _render_ups_stanza(name, topo.ups[name]) for name in sorted(topo.ups)
+    )
+
+
+def _render_upsd_users(secrets: dict[str, str] | None) -> str:
+    return (
+        "[monuser]\n"
+        f"password = {_resolve(secrets, 'monuser_pass')}\n"
+        "upsmon master\n"
+        "\n"
+        "[nutnode]\n"
+        f"password = {_resolve(secrets, 'nutnode_pass')}\n"
+        "upsmon slave\n"
+        "\n"
+        "[synology-monuser]\n"
+        f"password = {_resolve(secrets, 'synology_pass')}\n"
+        "upsmon slave\n"
+    )
+
+
+def render_server(topo: Topology, secrets: dict[str, str] | None) -> dict[str, str]:
+    """Render wol's server-side NUT files: `ups.conf` driver stanzas + `upsd.users`.
+
+    UPS stanzas are emitted sorted by NUT name for deterministic output.
+    `upsd.users` carries three accounts: `monuser` (upsmon master, the wol
+    host itself), `nutnode` (upsmon slave, shared by every NUT client host),
+    and `synology-monuser` (upsmon slave, the Synology DSM hardcoded-client
+    quirk per the 08-17 design spec).
+    """
+    return {
+        "/etc/nut/ups.conf": _render_ups_conf(topo),
+        "/etc/nut/upsd.users": _render_upsd_users(secrets),
+    }
 
 
 def render_host(topo: Topology, name: str, secrets: dict[str, str] | None) -> dict[str, str]:
