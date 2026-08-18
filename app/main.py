@@ -42,7 +42,6 @@ from .config import (
 from .engine import Engine, selftest_slot
 from . import proxmox, sources
 from .nutctl import routes as nutctl_routes
-from .nutctl.deploy import AsyncsshTransport as NutctlAsyncsshTransport
 from .nutctl.probe import probe_fleet as nutctl_probe_fleet
 from .nutctl.topology import TopologyError as NutctlTopologyError
 from .nutctl.topology import load_topology as nutctl_load_topology
@@ -244,7 +243,13 @@ async def _maybe_run_nutctl_probe() -> None:
         return
 
     secrets = nutctl_routes.load_secrets(cfg.nutctl_secrets_path)
-    transport = NutctlAsyncsshTransport(cfg.nutctl_key_path)
+    # Resolved through the SAME seam every route (and every test) patches --
+    # ``nutctl_routes.AsyncsshTransport`` -- rather than a separately imported
+    # binding of the same class. A second, independent import here used to
+    # bypass any test's monkeypatch of the routes-module attribute and make
+    # real asyncssh connection attempts on every test that starts the app
+    # (fix-round-1, I3).
+    transport = nutctl_routes.AsyncsshTransport(cfg.nutctl_key_path)
     try:
         results = await nutctl_probe_fleet(transport, topo, secrets)
     except Exception as exc:  # noqa: BLE001 - a probe crash must not kill the poll loop

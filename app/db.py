@@ -18,15 +18,27 @@ INFO = "info"
 WARNING = "warning"
 CRITICAL = "critical"
 
+# Every public function below takes ``path: Optional[Path] = None`` rather than
+# ``path: Path = DB_PATH``: a plain-value default is bound ONCE, at function-
+# definition time (i.e. at this module's first import) -- so a caller that
+# later does ``monkeypatch.setattr(db, "DB_PATH", tmp_path)`` and then calls
+# e.g. ``log_event("x")`` with no explicit path silently still writes to the
+# ORIGINAL path. ``None`` defers the lookup of ``DB_PATH`` to call time (a bare
+# module-global read inside ``_connect``, done fresh on every call), so the
+# monkeypatch actually takes effect. Found the hard way: the nutctl test suite
+# was appending rows to the real (and normally inaccessible) production event
+# db until this was fixed -- see task-8 fix round 1, I8.
 
-def _connect(path: Path = DB_PATH) -> sqlite3.Connection:
+
+def _connect(path: Optional[Path] = None) -> sqlite3.Connection:
+    path = path or DB_PATH
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
     return conn
 
 
-def init_db(path: Path = DB_PATH) -> None:
+def init_db(path: Optional[Path] = None) -> None:
     with _connect(path) as conn:
         conn.execute(
             """
@@ -42,7 +54,7 @@ def init_db(path: Path = DB_PATH) -> None:
         conn.commit()
 
 
-def log_event(event: str, detail: str = "", severity: str = INFO, path: Path = DB_PATH) -> None:
+def log_event(event: str, detail: str = "", severity: str = INFO, path: Optional[Path] = None) -> None:
     ts = datetime.now(timezone.utc).isoformat()
     with _connect(path) as conn:
         conn.execute(
@@ -52,7 +64,7 @@ def log_event(event: str, detail: str = "", severity: str = INFO, path: Path = D
         conn.commit()
 
 
-def recent_events(limit: int = 100, path: Path = DB_PATH) -> list[dict]:
+def recent_events(limit: int = 100, path: Optional[Path] = None) -> list[dict]:
     with _connect(path) as conn:
         rows = conn.execute(
             "SELECT ts, severity, event, detail FROM events ORDER BY id DESC LIMIT ?",
@@ -61,7 +73,7 @@ def recent_events(limit: int = 100, path: Path = DB_PATH) -> list[dict]:
     return [dict(r) for r in rows]
 
 
-def events_since(hours: int = 48, limit: int = 500, path: Path = DB_PATH) -> list[dict]:
+def events_since(hours: int = 48, limit: int = 500, path: Optional[Path] = None) -> list[dict]:
     """Events from the last ``hours`` (newest first, capped at ``limit``).
 
     Timestamps are stored as ISO-8601 UTC strings, which sort lexicographically, so a
@@ -77,7 +89,7 @@ def events_since(hours: int = 48, limit: int = 500, path: Path = DB_PATH) -> lis
     return [dict(r) for r in rows]
 
 
-def severity_counts_since(hours: int = 48, path: Path = DB_PATH) -> dict:
+def severity_counts_since(hours: int = 48, path: Optional[Path] = None) -> dict:
     """Count events per severity in the last ``hours`` (accurate regardless of any cap)."""
     cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
     with _connect(path) as conn:
@@ -91,7 +103,7 @@ def severity_counts_since(hours: int = 48, path: Path = DB_PATH) -> dict:
     return counts
 
 
-def clear_events(path: Path = DB_PATH) -> int:
+def clear_events(path: Optional[Path] = None) -> int:
     """Delete the whole event log (UI 'clear log' action). Returns rows removed."""
     with _connect(path) as conn:
         cur = conn.execute("DELETE FROM events")
@@ -99,7 +111,7 @@ def clear_events(path: Path = DB_PATH) -> int:
         return cur.rowcount
 
 
-def prune(keep: int = 5000, path: Path = DB_PATH) -> None:
+def prune(keep: int = 5000, path: Optional[Path] = None) -> None:
     """Keep the table bounded."""
     with _connect(path) as conn:
         conn.execute(

@@ -303,10 +303,21 @@ class Engine:
     def _ordered_hosts(self) -> list[HostConfig]:
         """Enabled hosts in shutdown order (this appliance's own host always last).
 
-        Uses the nutctl-synthesized list when ``set_nutctl_hosts`` has been called,
-        otherwise the plain web-UI-managed ``cfg.hosts`` -- see the seam note above.
+        Uses the nutctl-synthesized list when ``set_nutctl_hosts`` has been
+        called AND ``cfg.observer_mode`` is currently True, otherwise the plain
+        web-UI-managed ``cfg.hosts`` -- see the seam note above.
+
+        The ``observer_mode`` re-check here (not just in
+        ``app.nutctl.routes.sync_topology_into_engine``) is a second,
+        independent safety net: if an operator flips ``observer_mode`` off via
+        ``/api/config`` WITHOUT that seam ever re-running (nothing else calls
+        it), a stale ``nutctl_hosts`` from when observer_mode was True would
+        otherwise keep silently overriding the operator's real, armed host
+        list. Checking it fresh on every read closes that gap regardless of
+        whether the seam was re-run (fix-round-1, I5).
         """
-        hosts = self.nutctl_hosts if self.nutctl_hosts is not None else self.cfg.hosts
+        use_nutctl = self.nutctl_hosts is not None and getattr(self.cfg, "observer_mode", False)
+        hosts = self.nutctl_hosts if use_nutctl else self.cfg.hosts
         active = [h for h in hosts if h.enabled]
         return sorted(active, key=lambda h: (h.this_host, h.order, h.name))
 
