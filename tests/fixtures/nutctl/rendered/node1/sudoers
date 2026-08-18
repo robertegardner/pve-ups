@@ -1,0 +1,1 @@
+nut ALL=(root) NOPASSWD: /usr/sbin/qm shutdown [0-9]* --timeout 120, /usr/sbin/qm start [0-9]*, /sbin/shutdown -h now
