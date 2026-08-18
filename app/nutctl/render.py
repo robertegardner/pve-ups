@@ -108,15 +108,27 @@ def _render_upssched_env(host: HostSpec) -> str:
 
 
 def _render_ups_stanza(name: str, ups: UpsSpec) -> str:
+    """Render one `ups.conf` stanza, matching the live Debian/NUT convention
+    (see nut/topology/fixtures/wol/ups.conf in homelab-monitor): the header
+    is bare, every body line is indented 8 spaces, and `driver`/`port`/
+    `vendorid`/`desc`/`productid`/`serial` are all double-quoted. Field order
+    is driver -> port -> vendorid -> desc -> productid -> serial -> flags ->
+    override.battery.runtime.low; desc/productid are omitted when unset.
+    """
     d = ups.driver
-    lines = [f"[{name}]", "driver = usbhid-ups", f"port = {d.port}"]
+    body = ['driver = "usbhid-ups"', f'port = "{d.port}"']
     if d.vendorid is not None:
-        lines.append(f'vendorid = "{d.vendorid}"')
+        body.append(f'vendorid = "{d.vendorid}"')
+    if d.desc is not None:
+        body.append(f'desc = "{d.desc}"')
+    if d.productid is not None:
+        body.append(f'productid = "{d.productid}"')
     if d.serial is not None:
-        lines.append(f'serial = "{d.serial}"')
-    lines.extend(d.flags)
+        body.append(f'serial = "{d.serial}"')
+    body.extend(d.flags)
     if ups.runtime_low_s is not None:
-        lines.append(f"override.battery.runtime.low = {ups.runtime_low_s}")
+        body.append(f"override.battery.runtime.low = {ups.runtime_low_s}")
+    lines = [f"[{name}]"] + [f"        {line}" for line in body]
     return "\n".join(lines) + "\n"
 
 
@@ -129,16 +141,12 @@ def _render_ups_conf(topo: Topology) -> str:
 def _render_upsd_users(secrets: dict[str, str] | None) -> str:
     return (
         "[monuser]\n"
-        f"password = {_resolve(secrets, 'monuser_pass')}\n"
-        "upsmon master\n"
+        f"  password = {_resolve(secrets, 'monuser_pass')}\n"
+        "  upsmon master\n"
         "\n"
         "[nutnode]\n"
-        f"password = {_resolve(secrets, 'nutnode_pass')}\n"
-        "upsmon slave\n"
-        "\n"
-        "[synology-monuser]\n"
-        f"password = {_resolve(secrets, 'synology_pass')}\n"
-        "upsmon slave\n"
+        f"  password = {_resolve(secrets, 'nutnode_pass')}\n"
+        "  upsmon slave\n"
     )
 
 
@@ -146,15 +154,55 @@ def render_server(topo: Topology, secrets: dict[str, str] | None) -> dict[str, s
     """Render wol's server-side NUT files: `ups.conf` driver stanzas + `upsd.users`.
 
     UPS stanzas are emitted sorted by NUT name for deterministic output.
-    `upsd.users` carries three accounts: `monuser` (upsmon master, the wol
-    host itself), `nutnode` (upsmon slave, shared by every NUT client host),
-    and `synology-monuser` (upsmon slave, the Synology DSM hardcoded-client
-    quirk per the 08-17 design spec).
+    `upsd.users` carries exactly two 2-space-indented accounts, matching the
+    live capture: `monuser` (upsmon master, the wol host itself) and
+    `nutnode` (upsmon slave, shared by every NUT client host). There is no
+    separate Synology account -- discstation's DSM NUT client authenticates
+    as `monuser` directly (see nut/nas/README.md); the design spec's
+    `synology-monuser` account never existed on the live fleet.
     """
     return {
         "/etc/nut/ups.conf": _render_ups_conf(topo),
         "/etc/nut/upsd.users": _render_upsd_users(secrets),
     }
+
+
+#: Fixed footer nut-dw (the Unraid NAS plugin terramaster runs) appends to
+#: every GUI-managed file it owns: the plugin regenerates specific line
+#: numbers and leaves the rest as placeholder blanks, always closing with
+#: this comment naming which lines it overwrites. Verbatim from the live
+#: capture (nut/topology/fixtures/terramaster/{upsmon.conf,nut.conf} in
+#: homelab-monitor) -- not something nutctl invents, just reproduces.
+_NAS_RESERVED_FOOTER = (
+    "# If not in manual mode, the following lines are reserved and overwritten by GUI:\n"
+)
+
+
+def _render_nas_upsmon_conf(host: HostSpec, nut_host: str, sec: str) -> str:
+    mon_lines = "".join(
+        f"MONITOR {feed}@{nut_host} 1 monuser {sec} slave\n" for feed in host.feeds
+    )
+    return (
+        mon_lines
+        + 'SHUTDOWNCMD "/sbin/poweroff"\n'
+        + 'POWERDOWNFLAG "/etc/nut/no_killpower"\n'
+        + 'NOTIFYCMD "/usr/sbin/nut-notify"\n'
+        + "NOTIFYFLAG ONBATT SYSLOG+EXEC\n"
+        + "NOTIFYFLAG ONLINE SYSLOG+EXEC\n"
+        + "NOTIFYFLAG REPLBATT SYSLOG+EXEC\n"
+        + "\n" * 11
+        + _NAS_RESERVED_FOOTER
+        + "# L1:MONITOR/L3:POWERDOWNFLAG/L8:DEBUG_MIN\n"
+    )
+
+
+def _render_nas_nut_conf() -> str:
+    return (
+        "MODE = slave\n"
+        + "\n" * 17
+        + _NAS_RESERVED_FOOTER
+        + "# L1:MODE\n"
+    )
 
 
 def render_host(topo: Topology, name: str, secrets: dict[str, str] | None) -> dict[str, str]:
@@ -163,13 +211,28 @@ def render_host(topo: Topology, name: str, secrets: dict[str, str] | None) -> di
     Raises KeyError for hosts that don't get a NUT client at all
     (``type: display-only``), matching dict-style "no such renderable key"
     semantics rather than inventing a bespoke exception.
+
+    ``type: nas-nut-client`` hosts (e.g. terramaster's Unraid nut-dw plugin)
+    are GUI-managed appliances, not scriptable Debian `nut-client` installs
+    -- they get a completely different two-file render (`nut.conf` +
+    `upsmon.conf` only, no upssched/sudoers, monitoring account `monuser`
+    not `nutnode`) matching the live plugin's own generated layout exactly.
+    See task-10-report.md gap #4 (homelab-monitor) for the byte evidence.
     """
     host = topo.hosts[name]
     if host.type == "display-only":
         raise KeyError(name)
 
-    sec = _resolve_secret(secrets)
     nut_host = topo.nut_server.host
+
+    if host.type == "nas-nut-client":
+        sec = _resolve(secrets, "monuser_pass")
+        return {
+            "/etc/nut/upsmon.conf": _render_nas_upsmon_conf(host, nut_host, sec),
+            "/etc/nut/nut.conf": _render_nas_nut_conf(),
+        }
+
+    sec = _resolve_secret(secrets)
 
     return {
         "/etc/nut/upsmon.conf": _render_upsmon_conf(host, nut_host, sec),

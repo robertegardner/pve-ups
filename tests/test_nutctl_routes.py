@@ -35,7 +35,7 @@ FIX = Path(__file__).parent / "fixtures" / "nutctl"
 VALID_TOPO_TEXT = (FIX / "example-topology.yaml").read_text(encoding="utf-8")
 
 PASSWORD = "testpass123"
-SECRETS = {"nutnode_pass": "s3cret", "monuser_pass": "m4ster", "synology_pass": "syn0"}
+SECRETS = {"nutnode_pass": "s3cret", "monuser_pass": "m4ster"}
 
 _pwd_ctx = CryptContext(schemes=["argon2"], deprecated="auto")
 

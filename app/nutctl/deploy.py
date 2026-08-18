@@ -165,8 +165,8 @@ def _mode_for(path: str) -> tuple[str, str | None]:
     script conventions -- executable scripts run 0755, the upssched sudoers
     drop-in runs 0440, and everything else NUT keeps under `/etc/nut/` runs
     0640 root:nut. That last rule is deliberately NOT scoped to `*.conf`: it
-    also has to cover `upsd.users` (server-side, holds the monuser/nutnode/
-    synology-monuser passwords in plaintext) and any future non-`.conf` file
+    also has to cover `upsd.users` (server-side, holds the monuser/nutnode
+    passwords in plaintext) and any future non-`.conf` file
     dropped in `/etc/nut/` -- narrowing it to `.conf` would silently leave a
     secrets-bearing file world-readable at tee's default create mode.
     """

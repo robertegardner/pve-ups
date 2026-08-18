@@ -298,7 +298,7 @@ class AppConfig(BaseModel):
     # SSH key used by the nutctl deploy/preview/probe routes (app/nutctl/routes.py)
     # to reach the fleet's hosts + the NUT server; never written by the web UI form.
     nutctl_key_path: str = "/etc/pve-usv/id_ed25519_nutctl"
-    # YAML {nutnode_pass, monuser_pass, synology_pass}; missing file means "no
+    # YAML {nutnode_pass, monuser_pass}; missing file means "no
     # secrets configured" -- deploy/preview degrade safely (see routes.py), the
     # observer probe skips the config_match signal (see main.py).
     nutctl_secrets_path: str = "/etc/pve-usv/nutctl-secrets.yaml"

@@ -24,7 +24,7 @@ build the router, so the reverse import would be circular). Instead:
 
 Secret handling
 ---------------
-The nutnode/monuser/synology-monuser passwords never round-trip to the
+The nutnode/monuser passwords never round-trip to the
 browser. ``GET /preview`` diffs the *redacted* render (secrets=None, i.e.
 ``@SECRET:x@`` placeholders) against the live file with any real secret
 *values* substituted back to the same placeholders before the diff runs --
@@ -92,13 +92,13 @@ def set_last_probe(results: dict[str, ProbeResult], at: Optional[str]) -> None:
 
 
 # --- secrets file -------------------------------------------------------
-_SECRET_KEYS = ("nutnode_pass", "monuser_pass", "synology_pass")
+_SECRET_KEYS = ("nutnode_pass", "monuser_pass")
 
 
 def load_secrets(path: str) -> dict[str, str]:
     """Best-effort read of the nutctl secrets file: ``{}`` if absent or unreadable.
 
-    Format: YAML ``{nutnode_pass: ..., monuser_pass: ..., synology_pass: ...}``.
+    Format: YAML ``{nutnode_pass: ..., monuser_pass: ...}``.
     Callers must treat an empty result as "no secrets configured" and degrade
     safely (see ``_diff_host`` and the deploy routes' 409 when empty) -- never
     as "the secrets are the empty string".

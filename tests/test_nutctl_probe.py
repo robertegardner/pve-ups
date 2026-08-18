@@ -19,7 +19,7 @@ from app.nutctl.topology import SshSpec, load_topology
 
 FIX = Path(__file__).parent / "fixtures" / "nutctl"
 TOPO = load_topology(FIX / "example-topology.yaml")
-SECRETS = {"nutnode_pass": "s3cret", "monuser_pass": "m4ster", "synology_pass": "syn0"}
+SECRETS = {"nutnode_pass": "s3cret", "monuser_pass": "m4ster"}
 
 
 class FakeTransport:
