@@ -282,7 +282,7 @@ async function refreshStatus() {
   if (upses.length) {
     const statusMap = {};
     upses.forEach((u) => { statusMap[u.id] = { power_source: u.power_source, reachable: u.reachable, triggered: u.triggered }; });
-    drawTopology($("topoDiagramDash"), upses.map((u) => ({ id: u.id, name: u.name })), s.hosts, statusMap);
+    drawTopology($("topoDiagramDash"), upses.map((u) => ({ id: u.id, name: u.name, circuit: u.circuit })), s.hosts, statusMap);
   }
 }
 
@@ -700,16 +700,33 @@ async function testHost(el) {
 // ===== topology diagram (UPS -> Host) ======================================
 function drawTopology(svg, ups, hosts, statusMap) {
   if (!svg) return;
-  const NH = 30, GAP = 16, TOP = 10, NW = 150;
+  const NH = 30, GAP = 16, TOP = 10, NW = 150, CHDR = 18;
   const W = svg.clientWidth || 560;
   const leftX = 6, rightX = Math.max(leftX + NW + 40, W - NW - 6);
-  const rows = Math.max(ups.length, hosts.length, 1);
-  const H = TOP + rows * (NH + GAP);
+  // Group the UPS column by physical feed circuit (nutctl topology metadata,
+  // carried on the status snapshot): labeled groups sorted first with a header
+  // and a vertical rail, unlabeled UPSes after in original order. Callers
+  // without circuit data (the config wizard) keep the flat layout.
+  const hasCirc = ups.some((u) => u.circuit);
+  const sorted = hasCirc
+    ? ups.map((u, i) => [u, i]).sort((a, b) =>
+        String(a[0].circuit || "\uffff").localeCompare(String(b[0].circuit || "\uffff")) || a[1] - b[1]
+      ).map((p) => p[0])
+    : ups;
+  const upsY = {}, hostY = [], groups = [];
+  let y = TOP, prevCirc = null;
+  sorted.forEach((u) => {
+    const c = u.circuit || "";
+    if (hasCirc && c && c !== prevCirc) { groups.push({ circuit: c, y0: y + CHDR, y1: y + CHDR + NH }); y += CHDR; }
+    if (hasCirc && c && groups.length) groups[groups.length - 1].y1 = y + NH;
+    prevCirc = c;
+    upsY[u.id] = y;
+    y += NH + GAP;
+  });
+  hosts.forEach((h, j) => { hostY[j] = TOP + j * (NH + GAP); });
+  const H = Math.max(y, TOP + hosts.length * (NH + GAP), TOP + NH + GAP);
   svg.setAttribute("height", H);
   svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
-  const upsY = {}, hostY = [];
-  ups.forEach((u, i) => { upsY[u.id] = TOP + i * (NH + GAP); });
-  hosts.forEach((h, j) => { hostY[j] = TOP + j * (NH + GAP); });
   const allIds = ups.map((u) => u.id);
   const lineCls = (id) => {
     const st = statusMap && statusMap[id];
@@ -729,11 +746,20 @@ function drawTopology(svg, ups, hosts, statusMap) {
       out += `<path class="topo-line ${lineCls(id)}" data-ups="${esc(id)}" data-host="${j}" d="M${leftX + NW} ${y1} C ${(leftX + NW + rightX) / 2} ${y1}, ${(leftX + NW + rightX) / 2} ${y2}, ${rightX} ${y2}" />`;
     });
   });
+  // Circuit rails + labels (left edge, one per labeled group)
+  groups.forEach((g) => {
+    out += `<line class="topo-rail circ-${esc(g.circuit)}" x1="2" y1="${g.y0}" x2="2" y2="${g.y1}"/>` +
+      `<text class="topo-circlbl" x="${leftX}" y="${g.y0 - 5}">${esc(t("ups.circuit"))} ${esc(g.circuit)}</text>`;
+  });
   // UPS nodes (left)
-  ups.forEach((u) => {
+  sorted.forEach((u) => {
     const y = upsY[u.id], cls = statusMap ? "is-" + (lineCls(u.id) || "ok") : "";
+    const badge = u.circuit
+      ? `<rect class="topo-circ circ-${esc(u.circuit)}" x="${leftX + NW - 26}" y="${y + 6}" width="18" height="${NH - 12}" rx="4"/>` +
+        `<text class="topo-circtxt" x="${leftX + NW - 17}" y="${y + NH / 2 + 4}" text-anchor="middle">${esc(u.circuit)}</text>`
+      : "";
     out += `<g class="topo-node ${cls}" data-ups="${esc(u.id)}"><rect x="${leftX}" y="${y}" width="${NW}" height="${NH}" rx="6"/>` +
-      `<text x="${leftX + 10}" y="${y + NH / 2 + 4}">${esc(u.name)}</text></g>`;
+      `<text x="${leftX + 10}" y="${y + NH / 2 + 4}">${esc(u.name)}</text>${badge}</g>`;
   });
   // Host nodes (right)
   hosts.forEach((h, j) => {

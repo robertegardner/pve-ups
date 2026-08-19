@@ -434,6 +434,16 @@ svg.topo { display: block; width: 100%; }
 .topo-line.crit { stroke: var(--crit); stroke-width: 2.5; }
 .topo-line.muted { stroke: var(--text-faint); stroke-dasharray: 4 3; }
 .topo-node rect { fill: var(--surface); stroke: var(--border-strong); stroke-width: 1.5; }
+/* physical feed circuit (nutctl topology): rail per group + letter chip per UPS.
+   Fixed per-circuit colors match the Grafana power-health panels. */
+.topo-rail { stroke: var(--text-faint); stroke-width: 3; stroke-linecap: round; }
+.topo-rail.circ-A { stroke: #5794F2; }
+.topo-rail.circ-B { stroke: #FF9830; }
+.topo-circ { fill: var(--text-faint); opacity: .9; }
+.topo-circ.circ-A { fill: #5794F2; }
+.topo-circ.circ-B { fill: #FF9830; }
+.topo-circtxt { fill: #fff; font-size: 11px; font-weight: 600; }
+.topo-circlbl { fill: var(--text-muted); font-size: 11px; }
 .topo-node text { fill: var(--text); font-size: 13px; }
 .topo-node.host rect { fill: var(--surface-2); }
 .topo-node.is-ok rect { stroke: var(--ok); }
