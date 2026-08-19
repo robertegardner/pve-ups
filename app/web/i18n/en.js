@@ -87,6 +87,8 @@ I18N.en = {
   "ups.tipMains": "on mains",
   "ups.source": "Source",
   "ups.charge": "Charge",
+  "ups.load": "Output load",
+  "ups.circuit": "Circuit",
   "ups.runtime": "Runtime remaining",
   "ups.battery": "Battery",
   "ups.trigger": "Trigger",

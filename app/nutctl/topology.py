@@ -42,6 +42,11 @@ class DriverSpec(BaseModel):
 
 class UpsSpec(BaseModel):
     runtime_low_s: Optional[int] = None
+    # Which physical feed circuit this UPS plugs into (e.g. "A", "B") -- pure
+    # documentation/display; nothing renders or triggers on it. The empirical
+    # proof of the labels is a per-circuit breaker test: exactly the UPSes
+    # labeled with that circuit should report on-battery.
+    circuit: Optional[str] = None
     nominal_w: Optional[int] = None
     driver: DriverSpec = Field(default_factory=DriverSpec)
 

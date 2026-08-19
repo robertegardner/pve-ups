@@ -131,6 +131,10 @@ class Engine:
         self.host_fired: dict[str, bool] = {}
         self.host_states: dict[str, dict] = {}
 
+        # nutctl display metadata: upstream ups id -> physical circuit label,
+        # populated by sync_topology_into_engine (empty when nutctl unused).
+        self.nutctl_ups_circuits: dict[str, str] = {}
+
         # nutctl bridge seam (see set_nutctl_hosts): a synthesized host list derived
         # from the topology file, used by the evaluation/snapshot machinery INSTEAD
         # of ``self.cfg.hosts`` when set. Deliberately never written into ``self.cfg``
@@ -881,6 +885,12 @@ class Engine:
             "battery_status": st.battery_status,
             "runtime_remaining_min": st.runtime_remaining_min,
             "battery_charge_pct": st.battery_charge_pct,
+            "load_pct": st.load_pct,
+            "output_watts_estimated": st.output_watts_estimated,
+            # Physical feed circuit from the nutctl topology ("" when unknown);
+            # display-only, set via Engine.nutctl_ups_circuits (see
+            # app/nutctl/routes.sync_topology_into_engine).
+            "circuit": self.nutctl_ups_circuits.get(u.id, ""),
             "seconds_on_battery": self._ups_elapsed_on_battery(rt),
             "triggered": rt.triggered,
             "trigger_reason": rt.trigger_reason,

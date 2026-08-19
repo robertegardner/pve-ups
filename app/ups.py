@@ -257,11 +257,21 @@ class UpsState:
     seconds_on_battery: Optional[int] = None
     runtime_remaining_min: Optional[int] = None
     battery_charge_pct: Optional[int] = None
+    load_pct: Optional[int] = None                 # output load, percent (ups.load)
+    realpower_nominal_w: Optional[int] = None      # rated output watts (ups.realpower.nominal)
     error: Optional[str] = None
     raw: dict = field(default_factory=dict)
     # Which MIB profile produced this state ("" for sources without one, e.g. NUT).
     # Diagnostics only: no trigger ever reads it, but "auto" would be opaque without it.
     mib: str = ""
+
+    @property
+    def output_watts_estimated(self) -> Optional[int]:
+        """load% x rated watts. None unless the source reports both — no CyberPower
+        USB model measures real output power, so this estimate is all there is."""
+        if self.load_pct is None or self.realpower_nominal_w is None:
+            return None
+        return round(self.load_pct * self.realpower_nominal_w / 100)
 
     @property
     def on_battery(self) -> bool:

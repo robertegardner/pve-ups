@@ -87,6 +87,8 @@ I18N.de = {
   "ups.tipMains": "Netzbetrieb",
   "ups.source": "Quelle",
   "ups.charge": "Ladestand",
+  "ups.load": "Ausgangslast",
+  "ups.circuit": "Stromkreis",
   "ups.runtime": "Restlaufzeit",
   "ups.battery": "Akku",
   "ups.trigger": "Auslöser",

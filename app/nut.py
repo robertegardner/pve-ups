@@ -42,6 +42,8 @@ log = logging.getLogger("pve-usv.nut")
 VAR_STATUS = "ups.status"        # flag list: OL, OB, LB, ...
 VAR_CHARGE = "battery.charge"    # percent
 VAR_RUNTIME = "battery.runtime"  # SECONDS remaining (not minutes)
+VAR_LOAD = "ups.load"                       # percent of rated output
+VAR_REALPOWER_NOMINAL = "ups.realpower.nominal"  # rated output watts
 VAR_MFR = "device.mfr"
 VAR_MODEL = "device.model"
 VAR_MFR_LEGACY = "ups.mfr"       # pre-2.8 drivers
@@ -258,6 +260,12 @@ def _apply_variables(state: UpsState, variables: dict[str, str]) -> None:
     charge = _coerce_float(variables.get(VAR_CHARGE))
     if charge is not None:
         state.battery_charge_pct = int(charge)
+    load = _coerce_float(variables.get(VAR_LOAD))
+    if load is not None:
+        state.load_pct = int(load)
+    nominal = _coerce_float(variables.get(VAR_REALPOWER_NOMINAL))
+    if nominal is not None:
+        state.realpower_nominal_w = int(nominal)
     runtime_s = _coerce_float(variables.get(VAR_RUNTIME))
     if runtime_s is not None:
         # NUT reports seconds. Round *down* so a threshold fires a moment early rather

@@ -186,16 +186,23 @@ function upsCardHtml(u) {
     ? `<div class="stat"><span>${esc(t("ups.countdown"))}</span><b>${u.countdown_remaining_s} s</b></div>` : "";
   const clr = u.comm_loss_remaining_s != null
     ? `<div class="stat"><span>${esc(t("ups.commLossIn"))}</span><b>${u.comm_loss_remaining_s} s</b></div>` : "";
+  // Output load / estimated watts (load% x rated W; no CyberPower USB model
+  // measures real output power) -- only when the source reports ups.load.
+  const load = u.load_pct != null
+    ? `<div class="stat"><span>${esc(t("ups.load"))}</span><b>${u.load_pct} %${u.output_watts_estimated != null ? ` <span class=\"muted\">(~${u.output_watts_estimated} W)</span>` : ""}</b></div>` : "";
+  // Physical feed circuit (nutctl topology metadata; display only).
+  const circ = u.circuit
+    ? `<span class="faint">·</span><span>${esc(t("ups.circuit"))} <b>${esc(u.circuit)}</b></span>` : "";
   return `<div class="card ups-card is-${upsStatusCls(u)}">
     <div class="card-h"><h3><svg class="icon batt-ic"><use href="#i-battery"></use></svg>${esc(u.name)}</h3>${statIc}</div>
-    <div class="hero-meta"><span>${esc(t("ups.source"))} ${src}</span><span class="faint">·</span><span>${esc(model) || "–"}</span><span class="faint">·</span><span class="muted">${esc(via)}</span></div>
+    <div class="hero-meta"><span>${esc(t("ups.source"))} ${src}</span><span class="faint">·</span><span>${esc(model) || "–"}</span>${circ}<span class="faint">·</span><span class="muted">${esc(via)}</span></div>
     <div class="metric" style="margin-top:8px">
       <span class="k">${esc(t("ups.charge"))} ${pct === null ? "–" : pct + " %"}</span>
       <div class="gauge"><div class="gauge-fill${gcls}" style="width:${gw}"></div></div>
     </div>
     <div class="stat"><span>${esc(t("ups.runtime"))}</span><b>${fmt(u.runtime_remaining_min, " min")}</b></div>
     <div class="stat"><span>${esc(t("ups.battery"))}</span><b>${esc(u.battery_status)}</b></div>
-    ${cd}${clr}${trig}
+    ${load}${cd}${clr}${trig}
     <div class="stat"><span>${esc(t("ups.lastPoll"))}</span><b>${u.last_poll ? new Date(u.last_poll).toLocaleTimeString() : "–"}</b></div>
   </div>`;
 }

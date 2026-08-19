@@ -236,6 +236,16 @@ def sync_topology_into_engine(eng) -> None:
         log.warning("nutctl: topology at %s is invalid, engine host list unchanged: %s", path, exc)
         return
     eng.set_nutctl_hosts(_synthesize_hosts_for_engine(topo, eng.cfg.ups))
+    # Display metadata: upstream ups id -> physical circuit label (UpsSpec.circuit),
+    # consumed by Engine._ups_snapshot for the dashboard cards.
+    ups_id_by_nut_name = {
+        u.ups_name: u.id for u in eng.cfg.ups if isinstance(u, NutConfig) and u.ups_name
+    }
+    eng.nutctl_ups_circuits = {
+        ups_id_by_nut_name[name]: spec.circuit
+        for name, spec in topo.ups.items()
+        if spec.circuit and name in ups_id_by_nut_name
+    }
 
 
 def _fleet_battery_refusal(eng) -> Optional[str]:
