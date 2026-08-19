@@ -40,7 +40,7 @@ from .config import (
     save_config,
 )
 from .engine import Engine, selftest_slot
-from . import proxmox, sources
+from . import proxmox, proxyauth, sources
 from .nutctl import routes as nutctl_routes
 from .nutctl.probe import probe_fleet as nutctl_probe_fleet
 from .nutctl.topology import TopologyError as NutctlTopologyError
@@ -81,6 +81,10 @@ def _serializer(cfg: AppConfig) -> URLSafeTimedSerializer:
 
 
 def _is_authenticated(request: Request, cfg: AppConfig) -> bool:
+    # A trusted reverse proxy (authentik forward-auth) that injected an
+    # identity header counts as a full session (see app/proxyauth.py).
+    if proxyauth.header_identity(request, cfg) is not None:
+        return True
     # Bootstrap: before a password is set the wizard is open so it can be set.
     if not cfg.ui_password_hash:
         return True

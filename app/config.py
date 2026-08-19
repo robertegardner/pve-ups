@@ -295,6 +295,12 @@ class AppConfig(BaseModel):
     observer_mode: bool = True
     nutctl_topology_path: str = "/etc/pve-usv/nut-topology.yaml"
 
+    # Reverse-proxy peers whose X-Authentik-Username header is honored as a full
+    # session (authentik forward-auth in front of the appliance). Fail closed:
+    # empty (the default) means the header is never trusted; direct clients
+    # always use the UI-password cookie flow. See app/proxyauth.py.
+    trusted_auth_upstreams: list[str] = Field(default_factory=list)
+
     # SSH key used by the nutctl deploy/preview/probe routes (app/nutctl/routes.py)
     # to reach the fleet's hosts + the NUT server; never written by the web UI form.
     nutctl_key_path: str = "/etc/pve-usv/id_ed25519_nutctl"

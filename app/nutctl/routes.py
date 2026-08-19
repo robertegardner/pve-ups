@@ -63,7 +63,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ValidationError
 
-from .. import db
+from .. import db, proxyauth
 from ..config import AppConfig, HostConfig, NutConfig
 from .bridge import synthesize_hosts
 from .deploy import (
@@ -99,7 +99,7 @@ def get_engine():
 
 
 # --- auth: WRITE routes additionally require a UI password (I4) -------------
-async def require_ui_password_configured() -> None:
+async def require_ui_password_configured(request: Request) -> None:
     """Extra guard for nutctl WRITE routes.
 
     Upstream's ``require_auth``/``_is_authenticated`` (app/main.py) treats the
@@ -113,6 +113,11 @@ async def require_ui_password_configured() -> None:
     exists.
     """
     eng = get_engine()
+    # A proxy-authenticated caller (authentik forward-auth via a trusted
+    # upstream, app/proxyauth.py) IS real auth -- the bootstrap window's
+    # write refusal doesn't apply to them.
+    if proxyauth.header_identity(request, eng.cfg) is not None:
+        return
     if not eng.cfg.ui_password_hash:
         raise HTTPException(status_code=403, detail="set a UI password first")
 
@@ -294,10 +299,14 @@ def _actor(request: Request) -> str:
     Upstream has no per-user accounts at all -- one shared UI password, and the
     signed session cookie carries no username, just "ok" (see
     app/main.py:api_login). There is no real identity to name. The closest
-    thing "the session" exposes is the caller's remote address, so that is
-    what gets logged; a future multi-user auth layer should replace this with
-    the real identity it introduces.
+    thing "the session" exposes is the caller's remote address -- unless the
+    request came proxy-authenticated (authentik forward-auth), in which case
+    the injected username is a real identity and is preferred.
     """
+    eng = get_engine()
+    ident = proxyauth.header_identity(request, eng.cfg)
+    if ident is not None:
+        return ident
     return request.client.host if request.client else "unknown"
 
 
