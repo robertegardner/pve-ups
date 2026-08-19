@@ -282,7 +282,7 @@ async function refreshStatus() {
   if (upses.length) {
     const statusMap = {};
     upses.forEach((u) => { statusMap[u.id] = { power_source: u.power_source, reachable: u.reachable, triggered: u.triggered }; });
-    drawTopology($("topoDiagramDash"), upses.map((u) => ({ id: u.id, name: u.name, circuit: u.circuit })), s.hosts, statusMap);
+    drawTopology($("topoDiagramDash"), upses.map((u) => ({ id: u.id, name: u.name, circuit: u.circuit })), s.hosts, statusMap, s.circuit_power);
   }
 }
 
@@ -698,7 +698,7 @@ async function testHost(el) {
 }
 
 // ===== topology diagram (UPS -> Host) ======================================
-function drawTopology(svg, ups, hosts, statusMap) {
+function drawTopology(svg, ups, hosts, statusMap, circuitPower) {
   if (!svg) return;
   const NH = 30, GAP = 16, TOP = 10, NW = 150, CHDR = 18;
   const W = svg.clientWidth || 560;
@@ -746,10 +746,15 @@ function drawTopology(svg, ups, hosts, statusMap) {
       out += `<path class="topo-line ${lineCls(id)}" data-ups="${esc(id)}" data-host="${j}" d="M${leftX + NW} ${y1} C ${(leftX + NW + rightX) / 2} ${y1}, ${(leftX + NW + rightX) / 2} ${y2}, ${rightX} ${y2}" />`;
     });
   });
-  // Circuit rails + labels (left edge, one per labeled group)
+  // Circuit rails + labels (left edge, one per labeled group). When the
+  // snapshot carries measured whole-circuit watts (HA/Emporia; circuit_power),
+  // fresh readings join the label; stale/absent readings are simply omitted
+  // rather than shown as old numbers.
   groups.forEach((g) => {
+    const cp = circuitPower && circuitPower[g.circuit];
+    const meas = cp && !cp.stale && cp.watts != null ? ` · ${Math.round(cp.watts)} W` : "";
     out += `<line class="topo-rail circ-${esc(g.circuit)}" x1="2" y1="${g.y0}" x2="2" y2="${g.y1}"/>` +
-      `<text class="topo-circlbl" x="${leftX}" y="${g.y0 - 5}">${esc(t("ups.circuit"))} ${esc(g.circuit)}</text>`;
+      `<text class="topo-circlbl" x="${leftX}" y="${g.y0 - 5}">${esc(t("ups.circuit"))} ${esc(g.circuit)}${esc(meas)}</text>`;
   });
   // UPS nodes (left)
   sorted.forEach((u) => {

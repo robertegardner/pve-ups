@@ -533,6 +533,18 @@ def _merge_config(incoming: dict, existing: AppConfig) -> AppConfig:
             notifications.get("ntfy_token"), old_ntfy_token
         )
 
+    # Measured-circuit-power block (config-file managed; the settings form does
+    # not render it): carry the whole block over when the form omits it, and
+    # never let a masked HA token round-trip clobber the stored one.
+    circuit_power = data.get("circuit_power")
+    if isinstance(circuit_power, dict):
+        old_ha_token = existing.circuit_power.ha_token.get_secret_value()
+        circuit_power["ha_token"] = _reconcile_secret(
+            circuit_power.get("ha_token"), old_ha_token
+        )
+    else:
+        data["circuit_power"] = existing.circuit_power.model_dump(mode="python")
+
     # Never overwrite auth/session material from the config form.
     data["ui_password_hash"] = existing.ui_password_hash
     data["session_secret"] = existing.session_secret

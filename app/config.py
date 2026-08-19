@@ -19,6 +19,8 @@ from typing import Annotated, Literal, Optional, Union
 import yaml
 from pydantic import BaseModel, Field, SecretStr, field_validator, model_validator
 
+from .circuits import CircuitPowerConfig
+
 # Location can be overridden for tests / local runs.
 CONFIG_PATH = Path(os.environ.get("PVE_USV_CONFIG", "/etc/pve-usv/config.yaml"))
 
@@ -322,6 +324,11 @@ class AppConfig(BaseModel):
     hosts: list[HostConfig] = Field(default_factory=list)
     thresholds: Thresholds = Thresholds()
     notifications: Notifications = Notifications()
+    # Measured whole-circuit watts from Home Assistant (Emporia), shown on the
+    # power-feed circuit rails. Display-only; disabled until url+token+entities
+    # are all set (see app/circuits.py). The token is a secret: config file
+    # only, never rendered back out by the web UI.
+    circuit_power: CircuitPowerConfig = CircuitPowerConfig()
 
     # Scheduled self-test: verify the Proxmox API token + Sys.PowerMgmt still work, so a
     # broken/expired credential is caught long before a real outage needs it.

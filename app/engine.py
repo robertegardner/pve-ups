@@ -28,6 +28,7 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Optional
 
 from . import __version__, db, notify, proxmox
+from .circuits import CircuitPowerPoller
 from .config import AppConfig, HostConfig, UpsBase
 from .sources import poll
 from .ups import UpsState
@@ -134,6 +135,9 @@ class Engine:
         # nutctl display metadata: upstream ups id -> physical circuit label,
         # populated by sync_topology_into_engine (empty when nutctl unused).
         self.nutctl_ups_circuits: dict[str, str] = {}
+
+        # Measured circuit watts from HA (display-only, fail-soft; app/circuits.py).
+        self.circuit_power = CircuitPowerPoller(cfg.circuit_power)
 
         # nutctl bridge seam (see set_nutctl_hosts): a synthesized host list derived
         # from the topology file, used by the evaluation/snapshot machinery INSTEAD
@@ -296,6 +300,9 @@ class Engine:
         """
         self.cfg = cfg
         self._sync_runtimes()
+        # Fresh poller for the (possibly changed) HA settings; readings refill
+        # within one poll interval, so losing the cached watts here is fine.
+        self.circuit_power = CircuitPowerPoller(cfg.circuit_power)
 
     def set_nutctl_hosts(self, hosts: Optional[list[HostConfig]]) -> None:
         """Engine-side host list synthesized from the nutctl topology file (see
@@ -356,6 +363,8 @@ class Engine:
                         if rt is not None:
                             rt.state = st
                 await self._evaluate()
+                if self.cfg.circuit_power.enabled:
+                    await self.circuit_power.maybe_poll(_now())
                 await self._maybe_selftest()
                 self._maybe_prune()
             except Exception as exc:  # noqa: BLE001
@@ -993,4 +1002,7 @@ class Engine:
                 "comm_loss_remaining_s": self._aggregate_comm_loss_s(),
             },
             "hosts": hosts,
+            # Measured whole-circuit watts (HA/Emporia; {} unless configured).
+            # Keyed by the same circuit letters as the per-UPS "circuit" field.
+            "circuit_power": self.circuit_power.snapshot(_now()),
         }
