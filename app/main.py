@@ -545,6 +545,11 @@ def _merge_config(incoming: dict, existing: AppConfig) -> AppConfig:
     else:
         data["circuit_power"] = existing.circuit_power.model_dump(mode="python")
 
+    # Same deal for the PDU-outlet-power block (config-file managed, no
+    # secret): a form save that omits it must not reset it to defaults.
+    if not isinstance(data.get("pdu_power"), dict):
+        data["pdu_power"] = existing.pdu_power.model_dump(mode="python")
+
     # Never overwrite auth/session material from the config form.
     data["ui_password_hash"] = existing.ui_password_hash
     data["session_secret"] = existing.session_secret

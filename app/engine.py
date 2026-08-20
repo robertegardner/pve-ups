@@ -29,6 +29,7 @@ from typing import Optional
 
 from . import __version__, db, notify, proxmox
 from .circuits import CircuitPowerPoller
+from .outlets import PduOutletPoller
 from .config import AppConfig, HostConfig, UpsBase
 from .sources import poll
 from .ups import UpsState
@@ -135,9 +136,14 @@ class Engine:
         # nutctl display metadata: upstream ups id -> physical circuit label,
         # populated by sync_topology_into_engine (empty when nutctl unused).
         self.nutctl_ups_circuits: dict[str, str] = {}
+        # nutctl display metadata: upstream ups id -> [{device, outlet, label}]
+        # PDU-outlet references (UpsSpec.pdu_loads), same populate path.
+        self.nutctl_ups_pdu_loads: dict[str, list[dict]] = {}
 
         # Measured circuit watts from HA (display-only, fail-soft; app/circuits.py).
         self.circuit_power = CircuitPowerPoller(cfg.circuit_power)
+        # Per-outlet PDU watts from Prometheus (display-only, fail-soft; app/outlets.py).
+        self.pdu_power = PduOutletPoller(cfg.pdu_power)
 
         # nutctl bridge seam (see set_nutctl_hosts): a synthesized host list derived
         # from the topology file, used by the evaluation/snapshot machinery INSTEAD
@@ -300,9 +306,11 @@ class Engine:
         """
         self.cfg = cfg
         self._sync_runtimes()
-        # Fresh poller for the (possibly changed) HA settings; readings refill
-        # within one poll interval, so losing the cached watts here is fine.
+        # Fresh pollers for the (possibly changed) HA/Prometheus settings;
+        # readings refill within one poll interval, so losing the cached
+        # watts here is fine.
         self.circuit_power = CircuitPowerPoller(cfg.circuit_power)
+        self.pdu_power = PduOutletPoller(cfg.pdu_power)
 
     def set_nutctl_hosts(self, hosts: Optional[list[HostConfig]]) -> None:
         """Engine-side host list synthesized from the nutctl topology file (see
@@ -365,6 +373,8 @@ class Engine:
                 await self._evaluate()
                 if self.cfg.circuit_power.enabled:
                     await self.circuit_power.maybe_poll(_now())
+                if self.cfg.pdu_power.enabled and self.nutctl_ups_pdu_loads:
+                    await self.pdu_power.maybe_poll(_now())
                 await self._maybe_selftest()
                 self._maybe_prune()
             except Exception as exc:  # noqa: BLE001
@@ -1005,4 +1015,7 @@ class Engine:
             # Measured whole-circuit watts (HA/Emporia; {} unless configured).
             # Keyed by the same circuit letters as the per-UPS "circuit" field.
             "circuit_power": self.circuit_power.snapshot(_now()),
+            # Per-outlet PDU watts ({} unless pdu_power + topology pdu_loads
+            # are both configured). Keyed by UPS id -> [{name, watts, stale}].
+            "pdu_loads": self.pdu_power.snapshot(_now(), self.nutctl_ups_pdu_loads),
         }

@@ -246,6 +246,14 @@ def sync_topology_into_engine(eng) -> None:
         for name, spec in topo.ups.items()
         if spec.circuit and name in ups_id_by_nut_name
     }
+    # Display metadata: upstream ups id -> PDU-outlet references (UpsSpec.
+    # pdu_loads), consumed by Engine.status()'s pdu_loads snapshot (the
+    # dashboard "PDU loads" toggle; watts polled fail-soft by app/outlets.py).
+    eng.nutctl_ups_pdu_loads = {
+        ups_id_by_nut_name[name]: [ref.model_dump() for ref in spec.pdu_loads]
+        for name, spec in topo.ups.items()
+        if spec.pdu_loads and name in ups_id_by_nut_name
+    }
 
 
 def _fleet_battery_refusal(eng) -> Optional[str]:

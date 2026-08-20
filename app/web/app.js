@@ -121,6 +121,14 @@ function startDashboard() {
   pollTimer = setInterval(() => { refreshStatus(); refreshEvents(); }, 3000);
 }
 
+// "PDU loads" diagram toggle: persisted, redraw immediately on change.
+(() => {
+  const cb = document.getElementById("d_pdu_toggle");
+  if (!cb) return;
+  cb.checked = localStorage.getItem("pduLoads") === "1";
+  cb.onchange = () => { localStorage.setItem("pduLoads", cb.checked ? "1" : "0"); refreshStatus(); };
+})();
+
 function fmt(v, suffix = "") { return (v === null || v === undefined) ? "–" : v + suffix; }
 
 // Localized labels for the engine/host status enums (display only — raw values
@@ -282,7 +290,23 @@ async function refreshStatus() {
   if (upses.length) {
     const statusMap = {};
     upses.forEach((u) => { statusMap[u.id] = { power_source: u.power_source, reachable: u.reachable, triggered: u.triggered }; });
-    drawTopology($("topoDiagramDash"), upses.map((u) => ({ id: u.id, name: u.name, circuit: u.circuit })), s.hosts, statusMap, s.circuit_power);
+    // "PDU loads" toggle: append the topology's per-UPS PDU outlets (UDM,
+    // switches, ...) as display-only pseudo-hosts with live measured watts.
+    // The toggle only shows when the snapshot actually carries outlet data.
+    const pdu = s.pdu_loads || {};
+    const havePdu = Object.keys(pdu).length > 0;
+    const wrap = $("d_pdu_toggle_wrap");
+    if (wrap) wrap.hidden = !havePdu;
+    let topoHosts = s.hosts;
+    if (havePdu && localStorage.getItem("pduLoads") === "1") {
+      const extra = [];
+      Object.entries(pdu).forEach(([uid, rows]) => rows.forEach((r) => {
+        const w = (!r.stale && r.watts != null) ? ` · ${Math.round(r.watts)} W` : "";
+        extra.push({ name: `${r.name}${w}`, ups_ids: [uid], pdu: true });
+      }));
+      topoHosts = s.hosts.concat(extra);
+    }
+    drawTopology($("topoDiagramDash"), upses.map((u) => ({ id: u.id, name: u.name, circuit: u.circuit })), topoHosts, statusMap, s.circuit_power);
   }
 }
 
@@ -766,11 +790,11 @@ function drawTopology(svg, ups, hosts, statusMap, circuitPower) {
     out += `<g class="topo-node ${cls}" data-ups="${esc(u.id)}"><rect x="${leftX}" y="${y}" width="${NW}" height="${NH}" rx="6"/>` +
       `<text x="${leftX + 10}" y="${y + NH / 2 + 4}">${esc(u.name)}</text>${badge}</g>`;
   });
-  // Host nodes (right)
+  // Host nodes (right); PDU-outlet pseudo-hosts (h.pdu) render dashed/dimmed
   hosts.forEach((h, j) => {
     const y = hostY[j];
     const label = esc(h.name) + (h.this_host ? " ★" : "");
-    out += `<g class="topo-node host" data-host="${j}"><rect x="${rightX}" y="${y}" width="${NW}" height="${NH}" rx="6"/>` +
+    out += `<g class="topo-node host${h.pdu ? " pdu" : ""}" data-host="${j}"><rect x="${rightX}" y="${y}" width="${NW}" height="${NH}" rx="6"/>` +
       `<text x="${rightX + 10}" y="${y + NH / 2 + 4}">${label}</text></g>`;
   });
   svg.innerHTML = out;

@@ -38,6 +38,8 @@ I18N.en = {
   "topo.trig": "shutdown triggered",
   "topo.unreach": "unreachable",
   "topo.diagram": "Feed diagram",
+  "topo.pduToggle": "PDU loads",
+  "topo.pduToggleTitle": "Show PDU outlets (UDM, switches, ...) as display-only loads with live watts",
 
   // dashboard: appliance / hosts / events / actions
   "dash.appliance": "Appliance",

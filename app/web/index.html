@@ -91,6 +91,7 @@
       <!-- Topology: which UPS feeds which host -->
       <div class="card" id="d_topo_card" hidden>
         <div class="card-h"><h3><svg class="icon"><use href="#i-bolt"></use></svg> <span data-i18n="topo.title">Power feed (UPS → host)</span></h3>
+          <label class="topo-pdu-toggle" id="d_pdu_toggle_wrap" hidden title="Show PDU outlets (UDM, switches, ...) as display-only loads with live watts" data-i18n-title="topo.pduToggleTitle"><input type="checkbox" id="d_pdu_toggle"> <span data-i18n="topo.pduToggle">PDU loads</span></label>
           <a class="doclink" href="/manual.html#logik" data-manual="logik" target="_blank" rel="noopener" title="Read in the manual: How it works &amp; logic" data-i18n-title="topo.doc"><svg class="icon"><use href="#i-help"></use></svg></a></div>
         <svg id="topoDiagramDash" class="topo" width="100%"></svg>
         <p class="topo-legend">

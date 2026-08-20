@@ -40,6 +40,20 @@ class DriverSpec(BaseModel):
     flags: list[str] = Field(default_factory=list)
 
 
+class PduLoadRef(BaseModel):
+    """One PDU outlet fed (indirectly) by a UPS -- display-only.
+
+    ``device`` is the UniFi PDU's name exactly as unpoller labels it in
+    Prometheus (``name``); ``outlet`` is the 1-based ``outlet_index``. The
+    display name defaults to the live ``outlet_name`` label (renames in the
+    UniFi controller flow through automatically); ``label`` pins it instead.
+    """
+
+    device: str
+    outlet: int
+    label: Optional[str] = None
+
+
 class UpsSpec(BaseModel):
     runtime_low_s: Optional[int] = None
     # Which physical feed circuit this UPS plugs into (e.g. "A", "B") -- pure
@@ -48,6 +62,10 @@ class UpsSpec(BaseModel):
     # labeled with that circuit should report on-battery.
     circuit: Optional[str] = None
     nominal_w: Optional[int] = None
+    # PDU outlets this UPS feeds (display-only loads behind the dashboard's
+    # "PDU loads" toggle, with live watts via app/outlets.py). Nothing renders
+    # or triggers on these; hosts stay the acting inventory.
+    pdu_loads: list[PduLoadRef] = Field(default_factory=list)
     driver: DriverSpec = Field(default_factory=DriverSpec)
 
 

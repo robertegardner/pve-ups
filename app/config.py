@@ -20,6 +20,7 @@ import yaml
 from pydantic import BaseModel, Field, SecretStr, field_validator, model_validator
 
 from .circuits import CircuitPowerConfig
+from .outlets import PduPowerConfig
 
 # Location can be overridden for tests / local runs.
 CONFIG_PATH = Path(os.environ.get("PVE_USV_CONFIG", "/etc/pve-usv/config.yaml"))
@@ -329,6 +330,11 @@ class AppConfig(BaseModel):
     # are all set (see app/circuits.py). The token is a secret: config file
     # only, never rendered back out by the web UI.
     circuit_power: CircuitPowerConfig = CircuitPowerConfig()
+    # Per-outlet PDU watts from Prometheus (unpoller), shown as display-only
+    # loads behind the dashboard's "PDU loads" toggle. Which outlets hang off
+    # which UPS comes from the nutctl topology (UpsSpec.pdu_loads); this block
+    # only carries the Prometheus endpoint. Config file only, no secret.
+    pdu_power: PduPowerConfig = PduPowerConfig()
 
     # Scheduled self-test: verify the Proxmox API token + Sys.PowerMgmt still work, so a
     # broken/expired credential is caught long before a real outage needs it.

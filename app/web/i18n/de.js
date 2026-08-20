@@ -38,6 +38,8 @@ I18N.de = {
   "topo.trig": "Shutdown ausgelöst",
   "topo.unreach": "nicht erreichbar",
   "topo.diagram": "Schaubild der Versorgung",
+  "topo.pduToggle": "PDU-Verbraucher",
+  "topo.pduToggleTitle": "PDU-Steckdosen (UDM, Switches, ...) als reine Anzeige-Verbraucher mit Live-Watt anzeigen",
 
   // dashboard: appliance / hosts / events / actions
   "dash.appliance": "Appliance",

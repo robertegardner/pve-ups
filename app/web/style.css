@@ -446,6 +446,15 @@ svg.topo { display: block; width: 100%; }
 .topo-circlbl { fill: var(--text-muted); font-size: 11px; }
 .topo-node text { fill: var(--text); font-size: 13px; }
 .topo-node.host rect { fill: var(--surface-2); }
+/* PDU-outlet pseudo-hosts ("PDU loads" toggle): display-only, so dashed +
+   dimmed to keep them visually subordinate to the acting host inventory. */
+.topo-node.pdu rect { stroke-dasharray: 4 3; opacity: .85; }
+.topo-node.pdu text { fill: var(--text-muted); font-size: 12px; }
+.topo-pdu-toggle {
+  margin-left: auto; display: flex; align-items: center; gap: 5px;
+  color: var(--text-muted); font-size: 12px; cursor: pointer; user-select: none;
+}
+.topo-pdu-toggle input { accent-color: var(--ok); margin: 0; }
 .topo-node.is-ok rect { stroke: var(--ok); }
 .topo-node.is-warn rect { stroke: var(--warn); }
 .topo-node.is-crit rect { stroke: var(--crit); stroke-width: 2; }
